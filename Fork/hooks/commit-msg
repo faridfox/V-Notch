@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# faridfox fork guard: this repository carries no AI attribution lines (owner's decision; upstream strips them).
+msg="$1"
+pattern='^[[:space:]]*co-authored-by:.*(claude|anthropic)|generated with \[?claude code'
+if grep -Eiq "$pattern" "$msg"; then
+  grep -Eiv "$pattern" "$msg" > "$msg.vn" || true
+  # drop trailing blank lines left behind
+  printf '%s\n' "$(cat "$msg.vn")" > "$msg"; rm -f "$msg.vn"
+  echo "commit-msg (fork guard): removed AI attribution line(s) from the commit message." >&2
+fi
+exit 0
