@@ -1,0 +1,4 @@
+<Project>
+  <!-- faridfox fork (not part of upstream V-Notch): all fork build logic lives in Fork/msbuild/Fork.targets. -->
+  <Import Project="$(MSBuildThisFileDirectory)Fork/msbuild/Fork.targets" Condition="Exists('$(MSBuildThisFileDirectory)Fork/msbuild/Fork.targets')" />
+</Project>
