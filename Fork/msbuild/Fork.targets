@@ -1,0 +1,23 @@
+<Project>
+  <!--
+    faridfox fork: build-time additions, imported by /Directory.Build.targets (upstream has no such file).
+    Applies to the app project only (AssemblyName V-Notch, including WPF's temporary markup project).
+    Why each part exists: Fork/docs/RUNBOOK.md.
+  -->
+
+  <PropertyGroup Condition="'$(AssemblyName)' == 'V-Notch'">
+    <!-- Never recompile (and so overwrite) the committed upstream native DLL by accident: every local build uses
+         upstream's committed Native/out/VNotch.Native.dll. Opt in explicitly with -p:SkipNativeCompile=false
+         (Fork/vn native). GitHub Actions keeps upstream's behaviour (its CodeQL job compiles the DLL). -->
+    <SkipNativeCompile Condition="'$(SkipNativeCompile)' == '' And '$(GITHUB_ACTIONS)' != 'true'">true</SkipNativeCompile>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(AssemblyName)' == 'V-Notch'">
+    <!-- Update guard: embed a P-256 public key whose private half was destroyed, instead of upstream's
+         update-signing key. Official update manifests can then never verify, so the in-app updater can never
+         replace a fork build with an official release. The file Security/update-public-key.pem stays
+         untouched (upstream's compatibility gate compares that file). Tests/Fork/ForkIdentityTests checks this. -->
+    <EmbeddedResource Remove="Security\update-public-key.pem" />
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)no-update-public-key.pem" LogicalName="VNotch.UpdatePublicKey.pem" />
+  </ItemGroup>
+</Project>

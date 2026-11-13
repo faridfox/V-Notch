@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# faridfox fork guard (source: Fork/hooks/pre-commit; installed by `Fork/vn setup`).
+gd=$(git rev-parse --absolute-git-dir)
+# commits replayed during a sync/rework are checked by `vn verify` instead
+if [ -d "$gd/rebase-merge" ] || [ -d "$gd/rebase-apply" ]; then exit 0; fi
+branch=$(git symbolic-ref --quiet --short HEAD || echo DETACHED)
+fail() { printf 'pre-commit (fork guard): %s\n' "$*" >&2; exit 1; }
+[ "$branch" = master ] && fail "never commit on master: it is the exact upstream commit the fork is based on. Use main or a feat/* branch."
+if [ -f "$gd/MERGE_HEAD" ]; then
+  case "$branch" in main|sync/next) fail "no merge commits on $branch (the stack stays linear). Undo: git merge --abort. Upstream only comes in through 'Fork/vn sync'." ;; esac
+fi
+case "$branch" in up/*|DETACHED) exit 0 ;; esac   # contribution branches are upstream-shaped; pre-push checks them
+if git diff --cached --name-only | grep -qx 'Native/out/VNotch.Native.dll'; then
+  fail "the committed native DLL belongs to upstream. Undo: git restore --staged --worktree Native/out/VNotch.Native.dll (fork C++ goes into Fork/Native, see RUNBOOK)."
+fi
+if git diff --cached -U0 -- V-Notch.csproj | grep -Eq '^[+-][^+-].*<(Version|AssemblyVersion|FileVersion)>'; then
+  fail "do not edit the Version lines in V-Notch.csproj; stamp builds with -p:InformationalVersion=<version>+faridfox.<n>."
+fi
+exit 0

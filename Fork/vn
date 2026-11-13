@@ -1,0 +1,536 @@
+#!/usr/bin/env bash
+# vn - workflow helper for the faridfox personal fork of V-Notch.
+# Run from WSL inside the working copy (/mnt/c/dev/V-Notch). Only `vn publish` pushes anything.
+# Every rule here is explained in Fork/docs/RUNBOOK.md.
+set -euo pipefail
+export GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true   # never wait for an editor, whoever runs this
+
+# ---- configuration -------------------------------------------------------------------------------
+STACK_BRANCH=main            # upstream base + the fork's own commits, linear (GitHub default branch)
+MIRROR_BRANCH=master         # the exact upstream commit the stack is based on
+CAND_BRANCH=sync/next        # local-only candidate while a sync or rework is being verified
+UPSTREAM_REMOTE=upstream
+UPSTREAM_BRANCH=master
+ROOT_TRAILER='Fork-Stack-Root: true'           # marks the bottom fork commit; its parent is the upstream base
+CANDIDATE_TRAILER='Upstream-Candidate: yes'    # commits allowed to edit upstream files without markers
+MARKER='FORK('                                 # edits inside upstream files carry: FORK(faridfox): why
+ALWAYS_UPSTREAM=(Native/out/VNotch.Native.dll global.json packages.lock.json Tests/packages.lock.json
+  Uninstall/packages.lock.json LICENSE Security .github .gitattributes .gitignore .editorconfig NuGet.Config
+  Directory.Build.props Locales docs/TERMS_OF_SERVICE.md docs/TERMS_OF_SERVICE_VI.md docs/PRIVACY_POLICY.md
+  docs/PRIVACY_POLICY_VI.md docs/THIRD_PARTY_NOTICES.md docs/licenses)
+FORK_OWNED=(Fork Tests/Fork Directory.Build.targets CLAUDE.md)
+UPSTREAM_OWNED=(. ':(exclude)Fork' ':(exclude)Tests/Fork' ':(exclude)Directory.Build.targets' ':(exclude)CLAUDE.md')
+# Upstream files whose change means "read before publishing" (toolchain, CI contract, licence, identity).
+ATTENTION=(global.json Directory.Build.props Directory.Build.targets .github/workflows LICENSE
+  docs/TERMS_OF_SERVICE.md Tools/Assert-ForwardUpdateCompatibility.ps1 Security .gitignore .gitattributes
+  NuGet.Config)
+HOOKS=(pre-commit commit-msg pre-merge-commit pre-rebase pre-push post-checkout)
+SETTLE_HOURS=${VN_SETTLE_HOURS:-24}            # upstream amends fresh commits; by default take only older ones
+DOTNET="${VN_DOTNET:-/mnt/c/Program Files/dotnet/dotnet.exe}"
+TEST_PROJECT=Tests/VNotch.Tests.csproj
+FAST_FILTER='Category!=DesktopIntegration'
+export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+export WSLENV="${WSLENV:+$WSLENV:}DOTNET_CLI_TELEMETRY_OPTOUT:DOTNET_NOLOGO:DOTNET_SKIP_FIRST_TIME_EXPERIENCE"
+
+die()  { printf 'vn: %s\n' "$*" >&2; exit 1; }
+note() { printf '%s\n' "$*"; }
+
+TOP=$(git rev-parse --show-toplevel 2>/dev/null) || die "run this inside the V-Notch working copy"
+GIT_DIR_ABS=$(git rev-parse --absolute-git-dir)
+COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir)
+STATE_DIR="$COMMON_DIR/vn"; mkdir -p "$STATE_DIR"
+STATE="$STATE_DIR/sync-state"
+BASELINE_DIR="${VN_BASELINE_DIR:-$(dirname "$TOP")/$(basename "$TOP").baseline}"
+# A sync rewinds the working tree to upstream (where this file does not exist): always run from a copy.
+SELF=$(readlink -f "$0")
+if [ -z "${VN_REEXEC:-}" ] && [ "$SELF" != "$STATE_DIR/vn.run" ]; then
+  cp -f "$SELF" "$STATE_DIR/vn.run"
+  VN_REEXEC=1 exec bash "$STATE_DIR/vn.run" "$@"
+fi
+cd "$TOP"
+
+# ---- helpers ----------------------------------------------------------------------------------------
+short()   { git rev-parse --short "$1"; }
+has_ref() { git rev-parse -q --verify "$1" >/dev/null; }
+dn()      { [ -x "$DOTNET" ] || die "dotnet.exe not found at $DOTNET (set VN_DOTNET)"; "$DOTNET" "$@"; }
+stack_root() { git log --format=%H --grep="^${ROOT_TRAILER}\$" "$1" | tail -n 1; }
+stack_base() {
+  local root; root=$(stack_root "$1")
+  [ -n "$root" ] || die "no commit with the trailer '${ROOT_TRAILER}' on $1 (stack root missing; see RUNBOOK)"
+  git rev-parse "${root}^"
+}
+in_progress() { [ -d "$GIT_DIR_ABS/rebase-merge" ] || [ -d "$GIT_DIR_ABS/rebase-apply" ] || [ -f "$GIT_DIR_ABS/MERGE_HEAD" ] || [ -f "$GIT_DIR_ABS/CHERRY_PICK_HEAD" ]; }
+work_ref() { if has_ref "refs/heads/$CAND_BRANCH"; then echo "$CAND_BRANCH"; else echo "$STACK_BRANCH"; fi; }
+current_branch() { git symbolic-ref --quiet --short HEAD || echo "(detached)"; }
+load_state() { PHASE=; OLD_MAIN=; OLD_BASE=; NEW=; TS=; [ -f "$STATE" ] && . "$STATE"; return 0; }
+set_phase() { sed -i "s/^PHASE=.*/PHASE=$1/" "$STATE"; }
+upstream_default_ok() {
+  local head; head=$(git ls-remote --symref "$UPSTREAM_REMOTE" HEAD 2>/dev/null | awk '/^ref:/{print $2}' || true)
+  [ -z "$head" ] || [ "$head" = "refs/heads/$UPSTREAM_BRANCH" ] || die "upstream's default branch is now '$head' (expected $UPSTREAM_BRANCH): see RUNBOOK 'upstream renamed its branch'"
+}
+fetch_upstream() { git fetch --quiet "$UPSTREAM_REMOTE" || die "cannot fetch $UPSTREAM_REMOTE (offline?) - not continuing with stale data"; }
+settled_target() {   # $1=base $2=upstream tip -> newest commit that descends from my base and is old enough
+  local from=$1
+  git merge-base --is-ancestor "$1" "$2" || from=$(git merge-base "$1" "$2")
+  git rev-list -1 --before="${VN_SETTLE_BEFORE:-$SETTLE_HOURS hours ago}" --ancestry-path "$from..$2"
+}
+collision_check() {  # upstream must not own a path the fork owns (compared case-insensitively: NTFS)
+  local hit
+  hit=$(git ls-tree -r --name-only "$1" | grep -iE '^(Fork/|Tests/Fork/|Directory\.Build\.targets$|CLAUDE\.md$)' || true)
+  [ -z "$hit" ] || die "upstream now has path(s) the fork owns: $(printf '%s ' $hit)- see RUNBOOK 'path collision' before syncing"
+}
+backup_stack() {     # history-independent copy of my commits
+  local base=$1 ts=$2 dir="${VN_BACKUP_DIR:-$(dirname "$TOP")/$(basename "$TOP")-backup}/$2"
+  mkdir -p "$dir" && git format-patch --quiet -o "$dir" "$base..$STACK_BRANCH" && note "backup: $(ls "$dir" | wc -l) patch file(s) in $dir"
+}
+
+# ---- status -----------------------------------------------------------------------------------------
+cmd_status() {
+  upstream_default_ok
+  git fetch --quiet "$UPSTREAM_REMOTE" 2>/dev/null || note "!! could not fetch $UPSTREAM_REMOTE (offline?): upstream info below may be stale"
+  git fetch --quiet origin 2>/dev/null || note "!! could not fetch origin (offline?)"
+  note "branch     : $(current_branch)"
+  in_progress && note "!! a rebase/merge is in progress: 'vn sync --continue' or 'vn sync --abort'"
+  if has_ref "refs/heads/$CAND_BRANCH"; then
+    load_state
+    case "$PHASE" in
+      rework) note "!! a rework is open on $CAND_BRANCH: edit it, then 'vn rework --done' (or 'vn sync --abort')" ;;
+      done)   note "!! a prepared sync/rework waits on $CAND_BRANCH: 'vn gate' then 'vn publish' (or 'vn sync --abort')" ;;
+      *)      note "!! an unfinished sync on $CAND_BRANCH: 'vn sync --continue' or 'vn sync --abort'" ;;
+    esac
+  fi
+  load_state; [ "$PHASE" = promoted ] && note "!! last publish did not reach GitHub: run 'vn publish' again"
+  local base tip mirror
+  base=$(stack_base "$STACK_BRANCH"); tip=$(git rev-parse "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH")
+  note "stack base : $(git log -1 --format='%h  %ad  %s' --date=short "$base")"
+  note "upstream   : $(git log -1 --format='%h  %ad  %s' --date=short "$tip")"
+  if [ "$base" = "$tip" ]; then note "             no change since the last sync"
+  elif git merge-base --is-ancestor "$base" "$tip"; then note "             $(git rev-list --count "$base..$tip") new commit(s), $(git diff --name-only "$base" "$tip" | wc -l) file(s) changed -> 'vn sync'"
+  else note "             HISTORY REWRITTEN upstream ($(git rev-list --count "$tip..$base") commit(s) under my base are gone) -> 'vn sync' handles it the same way"; fi
+  mirror=$(git rev-parse -q --verify "refs/remotes/origin/$MIRROR_BRANCH" || true)
+  [ "$mirror" = "$base" ] || note "!! origin/$MIRROR_BRANCH (${mirror:0:8}) differs from the stack base (${base:0:8}); 'vn publish' repairs it"
+  note "my stack   : $(git rev-list --count "$base..$STACK_BRANCH") commit(s) on top of upstream"
+  git log --format='    %h %s' "$base..$STACK_BRANCH"
+  local om; om=$(git rev-parse -q --verify "refs/remotes/origin/$STACK_BRANCH" || true)
+  if [ -z "$om" ]; then note "!! $STACK_BRANCH has never been published"
+  elif [ "$om" != "$(git rev-parse "$STACK_BRANCH")" ]; then
+    if git merge-base --is-ancestor "$om" "$STACK_BRANCH"; then note "unpublished: $(git rev-list --count "$om..$STACK_BRANCH") commit(s) on $STACK_BRANCH (vn gate, vn publish)"
+    elif [ "$PHASE" != promoted ]; then note "!! origin/$STACK_BRANCH and local $STACK_BRANCH have diverged: see RUNBOOK 'origin moved'"; fi
+  fi
+  if [ -f "$STATE_DIR/gate-ok-$(git rev-parse "$STACK_BRANCH^{tree}")" ]; then note "gate       : passed for the current content of $STACK_BRANCH"
+  else note "gate       : not run for the current content of $STACK_BRANCH"; fi
+  local b r
+  for b in $(git for-each-ref --format='%(refname:short)' refs/heads/feat refs/heads/up); do
+    r=$(git rev-parse -q --verify "refs/remotes/origin/$b" || true)
+    [ "$r" = "$(git rev-parse "$b")" ] || note "work branch: $b is not pushed in its current state (git push origin $b, add --force-with-lease=$b:<old sha> after a rebase)"
+  done
+  if [ "$base" != "$tip" ]; then
+    local overlap; overlap=$(comm -12 <(git diff --name-only "$base" "$tip" | sort) <(git diff --name-only "$base" "$STACK_BRANCH" | sort) || true)
+    [ -z "$overlap" ] || { note "possible conflicts (changed upstream AND by the fork):"; printf '%s\n' "$overlap" | sed 's/^/    /'; }
+  fi
+  local h hooks_dir; hooks_dir=$(git rev-parse --path-format=absolute --git-path hooks)
+  if [ -d "$TOP/Fork/hooks" ]; then
+    for h in "${HOOKS[@]}"; do cmp -s "$TOP/Fork/hooks/$h" "$hooks_dir/$h" || { note "!! git hooks are missing or outdated: run 'Fork/vn setup'"; break; }; done
+  fi
+  [ -z "$(git status --porcelain --untracked-files=no)" ] || note "working tree: uncommitted changes present"
+  return 0
+}
+
+# ---- verify -----------------------------------------------------------------------------------------
+cmd_verify() {   # fast structural checks, no build.  usage: vn verify [ref]
+  local ref base rc=0 f
+  ref=${1:-$(work_ref)}; base=$(stack_base "$ref")
+  [ "$(git log --format=%H --grep="^${ROOT_TRAILER}\$" "$ref" | wc -l)" = 1 ] || { note "FAIL there must be exactly one commit with '${ROOT_TRAILER}'"; rc=1; }
+  [ "$(git rev-list --merges --count "$base..$ref")" = 0 ] || { note "FAIL merge commits inside the stack (it must stay linear)"; rc=1; }
+  if ! git diff --quiet "$base" "$ref" -- "${ALWAYS_UPSTREAM[@]}" 2>/dev/null; then
+    note "FAIL the fork changed always-upstream paths:"; git diff --name-only "$base" "$ref" -- "${ALWAYS_UPSTREAM[@]}" | sed 's/^/     /'; rc=1
+  fi
+  if git diff -U0 "$base" "$ref" -- V-Notch.csproj | grep -Eq '^[+-][^+-].*<(Version|AssemblyVersion|FileVersion)>'; then
+    note "FAIL the fork edited the Version lines in V-Notch.csproj (stamp builds with -p:InformationalVersion instead)"; rc=1
+  fi
+  only_candidates() { [ -z "$(git log --format=%H --invert-grep --grep="^${CANDIDATE_TRAILER}\$" "$base..$ref" -- "$1")" ]; }
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    only_candidates "$f" && continue
+    git diff -U0 "$base" "$ref" -- "$f" | grep -q "^+.*${MARKER}" || { note "FAIL upstream file edited without a '${MARKER}faridfox): ...' marker: $f"; rc=1; }
+  done < <(git diff --name-only --diff-filter=M "$base" "$ref" -- "${UPSTREAM_OWNED[@]}")
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    only_candidates "$f" && continue
+    note "FAIL file added outside the fork's own paths (${FORK_OWNED[*]}): $f"; rc=1
+  done < <(git diff --name-only --diff-filter=A "$base" "$ref" -- "${UPSTREAM_OWNED[@]}")
+  local deleted; deleted=$(git diff --name-only --diff-filter=D "$base" "$ref")
+  [ -z "$deleted" ] || { note "FAIL the fork deletes upstream files:"; printf '%s\n' "$deleted" | sed 's/^/     /'; rc=1; }
+  if git diff "$base" "$ref" | grep -Eq '^\+(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |$)'; then note "FAIL conflict markers were committed"; rc=1; fi
+  if git log --format=%B "$base..$ref" | grep -Eiq 'co-authored-by:.*(claude|anthropic)|generated with \[?claude code'; then note "FAIL AI attribution lines in commit messages (not allowed in this repository)"; rc=1; fi
+  local ignored; ignored=$(git status --porcelain --ignored -- Fork Tests/Fork 2>/dev/null | sed -n 's/^!! //p')
+  [ -z "$ignored" ] || { note "FAIL files under the fork's paths are git-ignored (git add -f, or fix Fork/.gitignore):"; printf '%s\n' "$ignored" | sed 's/^/     /'; rc=1; }
+  note "footprint of $ref vs upstream $(short "$base"): $(git diff --name-only --diff-filter=A "$base" "$ref" | wc -l) file(s) added, $(git diff --name-only --diff-filter=M "$base" "$ref" | wc -l) upstream file(s) touched"
+  git diff --name-only --diff-filter=M "$base" "$ref" | sed 's/^/    touched: /'
+  if [ "$rc" = 0 ]; then note "verify: OK"; else note "verify: FAILED"; fi
+  return "$rc"
+}
+
+# ---- sync / rework ----------------------------------------------------------------------------------
+conflict_stop() {
+  load_state
+  note; note "CONFLICT while replaying: $(git log -1 --format='%h %s' REBASE_HEAD 2>/dev/null || true)"
+  git diff --name-only --diff-filter=U | sed 's/^/    conflicted: /'
+  note "Resolve it inside this commit (RUNBOOK 'conflict playbook'). Take upstream's version of a file:"
+  note "    git checkout $(short "$NEW") -- <path>      (if upstream deleted it: git rm <path>)"
+  note "then 'git add' the files and run: Fork/vn sync --continue      (give up: Fork/vn sync --abort)"
+  exit 2
+}
+sync_move() {      # phase 2: replay the (already folded) candidate onto the new upstream commit
+  load_state
+  [ "$(git rev-parse "$CAND_BRANCH^{tree}")" = "$(git rev-parse "$OLD_MAIN^{tree}")" ] || die "folding fixups changed the content (tree differs from $STACK_BRANCH); inspect, or 'vn sync --abort'"
+  set_phase move
+  if git rebase --empty=drop --onto "$NEW" "$OLD_BASE" "$CAND_BRANCH"; then sync_finish; else conflict_stop; fi
+}
+sync_finish() {
+  load_state
+  set_phase done
+  local base; base=$(stack_base "$CAND_BRANCH")
+  [ "$base" = "$NEW" ] || die "the candidate is not based on $(short "$NEW") (found $(short "$base")): the stack root commit must stay first; inspect, or 'vn sync --abort'"
+  note; note "== how each of my commits changed (range-diff; '=' means untouched, '!' changed, '<' gone) =="
+  git range-diff --no-color "$OLD_BASE..$OLD_MAIN" "$NEW..$CAND_BRANCH" | cut -c1-160 | tee "$STATE_DIR/last-range-diff.txt" || true
+  note; cmd_verify "$CAND_BRANCH" || true
+  local fp_old fp_new
+  fp_old=$(git diff --numstat "$OLD_BASE" "$OLD_MAIN" -- "${UPSTREAM_OWNED[@]}")
+  fp_new=$(git diff --numstat "$NEW" "$CAND_BRANCH" -- "${UPSTREAM_OWNED[@]}")
+  if [ "$fp_old" = "$fp_new" ]; then note "footprint in upstream-owned files: unchanged (good)"; rm -f "$STATE_DIR/footprint-changed"
+  else note "!! my footprint in upstream-owned files CHANGED - every line below needs an explanation"
+       note "   (a lost hook, or upstream code I reverted by accident?). Publishing then needs: vn publish --footprint-reviewed"
+       diff <(printf '%s\n' "$fp_old") <(printf '%s\n' "$fp_new") | sed 's/^/     /' || true
+       : > "$STATE_DIR/footprint-changed"
+  fi
+  local b
+  for b in $(git for-each-ref --format='%(refname:short)' refs/heads/feat refs/heads/up); do
+    note "after publishing, move work branch $b onto the new base:  Fork/vn move $b"
+  done
+  note; note "prepared on $CAND_BRANCH ($STACK_BRANCH is untouched). Next: 'Fork/vn gate', then 'Fork/vn publish'.  Drop it: 'Fork/vn sync --abort'"
+}
+precheck_start() {
+  in_progress && die "a rebase/merge is already in progress (vn sync --continue | vn sync --abort)"
+  has_ref "refs/heads/$CAND_BRANCH" && die "a sync/rework already exists on $CAND_BRANCH (finish it, or 'vn sync --abort')"
+  load_state; [ "$PHASE" = promoted ] && die "the last publish did not reach GitHub yet: run 'vn publish' first"
+  [ -z "$(git status --porcelain --untracked-files=no)" ] || die "uncommitted changes present; commit them first"
+  [ "$(current_branch)" = "$STACK_BRANCH" ] || git checkout --quiet "$STACK_BRANCH"
+  [ "$(git rev-list --merges --count "$(stack_base "$STACK_BRANCH")..$STACK_BRANCH")" = 0 ] || die "merge commits inside the stack; see RUNBOOK 'accidental merge'"
+  git fetch --quiet origin 2>/dev/null || true
+  local om; om=$(git rev-parse -q --verify "refs/remotes/origin/$STACK_BRANCH" || true)
+  if [ -n "$om" ] && ! git merge-base --is-ancestor "$om" "$STACK_BRANCH"; then die "origin/$STACK_BRANCH has commits the local branch lacks; see RUNBOOK 'origin moved'"; fi
+}
+cmd_sync() {
+  case "${1:-}" in
+    --continue)
+      load_state; [ -n "$PHASE" ] || die "no sync in progress"
+      if in_progress; then git rebase --continue || conflict_stop; fi
+      load_state
+      case "$PHASE" in
+        fold)   sync_move ;;
+        move)   sync_finish ;;
+        rework) note "a rework is open: edit $CAND_BRANCH, then 'vn rework --done'" ;;
+        *)      note "already prepared on $CAND_BRANCH: run 'vn gate' then 'vn publish'" ;;
+      esac
+      return ;;
+    --abort)
+      git rebase --abort 2>/dev/null || true
+      load_state
+      [ "$PHASE" = promoted ] && die "nothing to abort: the sync is already promoted locally; run 'vn publish' to push it"
+      git checkout --quiet "$STACK_BRANCH" 2>/dev/null || true
+      has_ref "refs/heads/$CAND_BRANCH" && git branch --quiet -D "$CAND_BRANCH"
+      rm -f "$STATE" "$STATE_DIR/footprint-changed"
+      note "dropped; $STACK_BRANCH is unchanged at $(short "$STACK_BRANCH")"; return ;;
+  esac
+  precheck_start
+  upstream_default_ok
+  fetch_upstream
+  local base new old_main ts tip fixups
+  base=$(stack_base "$STACK_BRANCH"); old_main=$(git rev-parse "$STACK_BRANCH"); tip=$(git rev-parse "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH")
+  case "${1:-}" in
+    --now) new=$tip ;;
+    "")    new=$(settled_target "$base" "$tip"); [ -n "$new" ] || new=$base
+           [ "$new" = "$tip" ] || note "note: $(git rev-list --count "$new..$tip") upstream commit(s) are younger than ${SETTLE_HOURS}h and wait for the next sync (upstream often amends fresh commits; 'vn sync --now' takes them)" ;;
+    -*)    die "unknown option $1" ;;
+    *)     new=$(git rev-parse --verify "$1^{commit}") ;;
+  esac
+  fixups=$(git rev-list --count "$base..$STACK_BRANCH" --grep='^\(fixup\|squash\|amend\)! ')
+  if [ "$new" = "$base" ] || git merge-base --is-ancestor "$new" "$base"; then
+    [ "$fixups" != 0 ] || { note "nothing to sync: already based on $(short "$base")"; return 0; }
+    new=$base; note "no settled upstream change; folding $fixups fixup commit(s) only"
+  elif git merge-base --is-ancestor "$base" "$new"; then note "upstream advanced by $(git rev-list --count "$base..$new") commit(s): $(short "$base") -> $(short "$new")"
+  else note "upstream REWROTE its history: $(git rev-list --count "$new..$base") commit(s) under my base are gone; replaying my $(git rev-list --count "$base..$STACK_BRANCH") commit(s) onto $(short "$new")"; fi
+  collision_check "$new"
+  local attn; attn=$(git diff --stat "$base" "$new" -- "${ATTENTION[@]}" 2>/dev/null || true)
+  [ -z "$attn" ] || { note "ATTENTION - upstream changed files that affect how this fork is built or governed; read them before publishing:"; printf '%s\n' "$attn" | sed 's/^/    /'; }
+  ts=$(date -u +%Y%m%dT%H%M%SZ)
+  backup_stack "$base" "$ts"
+  printf 'OLD_MAIN=%s\nOLD_BASE=%s\nNEW=%s\nTS=%s\nPHASE=fold\n' "$old_main" "$base" "$new" "$ts" > "$STATE"
+  git checkout --quiet -B "$CAND_BRANCH" "$STACK_BRANCH"
+  if [ "$fixups" != 0 ]; then
+    git rebase -i --autosquash --empty=drop --onto "$base" "$base" "$CAND_BRANCH" || conflict_stop
+  fi
+  sync_move
+}
+cmd_rework() {     # edit my own commits (drop / reorder / reword / split) on a verified candidate
+  case "${1:-}" in
+    --done)
+      load_state; [ "$PHASE" = rework ] || die "no rework in progress (start one with 'vn rework')"
+      in_progress && die "finish the rebase first (git rebase --continue)"
+      [ -z "$(git status --porcelain --untracked-files=no)" ] || die "commit or discard changes on $CAND_BRANCH first"
+      sync_finish; return ;;
+    --abort) cmd_sync --abort; return ;;
+    "") ;;
+    *) die "usage: vn rework [--done|--abort]" ;;
+  esac
+  precheck_start
+  local base ts; base=$(stack_base "$STACK_BRANCH"); ts=$(date -u +%Y%m%dT%H%M%SZ)
+  backup_stack "$base" "$ts"
+  printf 'OLD_MAIN=%s\nOLD_BASE=%s\nNEW=%s\nTS=%s\nPHASE=rework\n' "$(git rev-parse "$STACK_BRANCH")" "$base" "$base" "$ts" > "$STATE"
+  git checkout --quiet -B "$CAND_BRANCH" "$STACK_BRANCH"
+  note "rework open on $CAND_BRANCH (based on upstream $(short "$base")). Edit the stack, e.g.:"
+  note "    git rebase -i $(short "$base")        (keep the '${ROOT_TRAILER}' commit first)"
+  note "then: Fork/vn rework --done  ->  Fork/vn gate  ->  Fork/vn publish        (give up: Fork/vn rework --abort)"
+}
+
+cmd_move() {       # re-base a work branch (feat/* onto main, up/* onto upstream) after a sync or rework
+  local b=${1:-} onto r before own oldest point
+  [ -n "$b" ] || die "usage: vn move <feat/...|up/...>"
+  has_ref "refs/heads/$b" || die "no local branch $b"
+  case "$b" in "$STACK_BRANCH"|"$MIRROR_BRANCH"|"$CAND_BRANCH") die "$b is not a work branch";; esac
+  in_progress && die "a rebase/merge is in progress; finish or abort it first"
+  [ -z "$(git status --porcelain --untracked-files=no)" ] || die "uncommitted changes present; commit them first"
+  load_state; [ -z "$PHASE" ] || die "publish or abort the pending sync/rework first (vn status)"
+  case "$b" in up/*) onto="refs/remotes/$UPSTREAM_REMOTE/$UPSTREAM_BRANCH" ;; *) onto="$STACK_BRANCH" ;; esac
+  # the branch's own commits = everything not reachable from upstream (now or any earlier fetch), main, or archived mains
+  own=$( { echo "$b"; echo "^$onto"; echo "^$STACK_BRANCH"
+           git for-each-ref --format='^%(refname)' refs/archive
+           git reflog show --format='^%H' "refs/remotes/$UPSTREAM_REMOTE/$UPSTREAM_BRANCH" 2>/dev/null || true
+         } | git rev-list --reverse --topo-order --stdin )
+  [ -n "$own" ] || { note "$b has no commits of its own beyond $onto (already landed?) - delete it or leave it"; return 0; }
+  oldest=$(printf '%s\n' "$own" | head -n 1); point=$(git rev-parse "$oldest^"); before=$(git rev-parse "$b")
+  note "moving $(printf '%s\n' "$own" | wc -l) commit(s) of $b from $(short "$point") onto $onto"
+  git rebase --onto "$onto" "$point" "$b" || { note "conflict: resolve, 'git add', 'git rebase --continue' (or 'git rebase --abort': $b stays unchanged)"; exit 2; }
+  note "done. Push it with:  git push --force-with-lease=$b:$before origin $b"
+}
+
+# ---- gate (build + tests) ---------------------------------------------------------------------------
+TRX_PY='
+import sys, xml.etree.ElementTree as ET
+ns="{http://microsoft.com/schemas/VisualStudio/TeamTest/2010}"
+root=ET.parse(sys.argv[1]).getroot()
+names={}
+for ut in root.iter(ns+"UnitTest"):
+    tm=ut.find(ns+"TestMethod")
+    if tm is not None:
+        names[ut.get("id")]=tm.get("className","")+"."+tm.get("name","").split("(")[0]
+failed=set()
+for r in root.iter(ns+"UnitTestResult"):
+    if r.get("outcome")=="Failed":
+        failed.add(names.get(r.get("testId"), r.get("testName","?").split("(")[0]))
+c=root.find(ns+"ResultSummary/"+ns+"Counters")
+if c is not None:
+    sys.stderr.write("    tests: total=%s passed=%s failed=%s not-run=%s\n"%(c.get("total"),c.get("passed"),c.get("failed"),c.get("notExecuted")))
+for n in sorted(failed): print(n)
+'
+names_filter() { local n f=""; for n in "$@"; do f="${f:+$f|}FullyQualifiedName=$n"; done; printf '%s' "$f"; }
+run_tests() {      # $1 checkout dir, $2 label, $3 filter -> prints failing test names
+  local dir=$1 label=$2 filter=$3 trx
+  trx="$dir/TestResults/vn/$label.trx"; rm -f "$trx"
+  ( cd "$dir" && dn test "$TEST_PROJECT" -c Release --no-build --no-restore --filter "$filter" \
+      --logger "trx;LogFileName=$label.trx" --results-directory TestResults/vn --blame-hang-timeout 120s ) \
+      > "$LOG_DIR/$label.log" 2>&1 || true
+  [ -f "$trx" ] || die "no test results were produced; see $LOG_DIR/$label.log"
+  python3 -I -c "$TRX_PY" "$trx"
+}
+prepare_baseline() { # $1 upstream commit -> clean build of it in the sibling baseline worktree
+  local base=$1
+  if [ -e "$BASELINE_DIR/.git" ]; then git -C "$BASELINE_DIR" checkout --quiet --detach --force "$base"
+  else git worktree add --quiet --detach --force "$BASELINE_DIR" "$base"; fi
+  note "    building pure upstream $(short "$base") in $BASELINE_DIR ..."
+  ( cd "$BASELINE_DIR" && dn restore V-Notch.sln --locked-mode -nologo -v:q && \
+    dn build "$TEST_PROJECT" -c Release --no-restore -nologo -v:q -nr:false -p:SkipNativeCompile=true ) \
+    > "$LOG_DIR/baseline-build.log" 2>&1 || die "pure upstream $(short "$base") does not build here; see $LOG_DIR/baseline-build.log"
+}
+base_failures() {  # $1 base, rest: test names -> prints the names that ALSO fail on pure upstream
+  local base=$1; shift
+  local full="$STATE_DIR/baseline/$base.full"
+  if [ -f "$full" ]; then printf '%s\n' "$@" | grep -Fxf "$full" || true; return 0; fi
+  prepare_baseline "$base"
+  run_tests "$BASELINE_DIR" "baseline-targeted" "$(names_filter "$@")"
+}
+cmd_baseline() {   # full fast-suite run on a pure upstream commit; result is cached for every later gate
+  local base; base=$(git rev-parse --verify "${1:-$(stack_base "$STACK_BRANCH")}^{commit}")
+  LOG_DIR="$STATE_DIR/gate/$(date -u +%Y%m%dT%H%M%SZ)-baseline"; mkdir -p "$LOG_DIR" "$STATE_DIR/baseline"
+  note "== baseline: full fast test suite on pure upstream $(short "$base") =="
+  prepare_baseline "$base"
+  local failed; failed=$(run_tests "$BASELINE_DIR" "baseline-full" "$FAST_FILTER")
+  printf '%s\n' "$failed" | sed '/^$/d' > "$STATE_DIR/baseline/$base.full"
+  note "    $(wc -l < "$STATE_DIR/baseline/$base.full") test(s) fail on pure upstream (stored in $STATE_DIR/baseline/$base.full)"
+  sed 's/^/      /' "$STATE_DIR/baseline/$base.full"
+}
+cmd_gate() {
+  in_progress && die "finish the rebase first"
+  local ref; ref=$(work_ref)
+  [ "$(current_branch)" = "$ref" ] || die "check out $ref first (the gate builds the working tree)"
+  [ -z "$(git status --porcelain --untracked-files=no)" ] || die "uncommitted changes: the gate checks committed content only"
+  local base tree; base=$(stack_base "$ref"); tree=$(git rev-parse "$ref^{tree}")
+  LOG_DIR="$STATE_DIR/gate/$(date -u +%Y%m%dT%H%M%SZ)"; mkdir -p "$LOG_DIR"
+  note "== gate for $ref ($(short "$ref")) on upstream $(short "$base"); logs: $LOG_DIR =="
+  cmd_verify "$ref" > "$LOG_DIR/verify.log" || { cat "$LOG_DIR/verify.log"; die "verify failed"; }
+  note "-- restore (locked)"; dn restore V-Notch.sln --locked-mode -nologo -v:q > "$LOG_DIR/restore.log" 2>&1 || { tail -20 "$LOG_DIR/restore.log"; die "restore failed"; }
+  note "-- build Release, warnings as errors"
+  dn build V-Notch.sln -c Release --no-restore -warnaserror -nologo -v:q -nr:false -clp:NoSummary -p:SkipNativeCompile=true > "$LOG_DIR/build.log" 2>&1 \
+    || { grep -E 'error|warning' "$LOG_DIR/build.log" | head -30; die "build failed; see $LOG_DIR/build.log"; }
+  note "-- locale files"; python3 -I Tools/validate_locales.py > "$LOG_DIR/locales.log" 2>&1 || { cat "$LOG_DIR/locales.log"; die "locale validation failed"; }
+  note "-- fast test suite"
+  local failed again inherited mine flaky
+  failed=$(run_tests "$TOP" gate-full "$FAST_FILTER")
+  mine=""; inherited=""; flaky=""
+  if [ -n "$failed" ]; then
+    [ "$(printf '%s\n' "$failed" | wc -l)" -le 60 ] || { printf '%s\n' "$failed" | head -60; die "too many failing tests to triage"; }
+    note "    $(printf '%s\n' "$failed" | wc -l) failing; re-running them once to rule out flaky tests"
+    again=$(run_tests "$TOP" gate-rerun "$(names_filter $failed)")
+    flaky=$(comm -23 <(printf '%s\n' "$failed" | sort) <(printf '%s\n' "$again" | sort) | sed '/^$/d')
+    if [ -n "$again" ]; then
+      note "    comparing the remaining failures with pure upstream $(short "$base")"
+      inherited=$(base_failures "$base" $again | sed '/^$/d')
+      mine=$(comm -23 <(printf '%s\n' "$again" | sort) <(printf '%s\n' "$inherited" | sort) | sed '/^$/d')
+    fi
+  fi
+  [ -z "$flaky" ] || { note "    flaky (failed once, passed on re-run):"; printf '%s\n' "$flaky" | sed 's/^/      /'; }
+  [ -z "$inherited" ] || { note "    inherited (also fail on pure upstream - not the fork's fault):"; printf '%s\n' "$inherited" | sed 's/^/      /'; }
+  if [ -n "$mine" ]; then note "    FAILING BECAUSE OF THE FORK:"; printf '%s\n' "$mine" | sed 's/^/      /'; die "gate failed"; fi
+  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then git status --short --untracked-files=no; die "the build modified tracked files (native DLL? restore with: git restore <path>)"; fi
+  { echo "date=$(date -u +%FT%TZ)"; echo "ref=$ref $(git rev-parse "$ref")"; echo "base=$base"; echo "inherited:"; printf '%s\n' "$inherited"; echo "flaky:"; printf '%s\n' "$flaky"; } > "$STATE_DIR/gate-ok-$tree"
+  note "gate: PASSED for $ref ($(short "$ref"))"
+}
+
+# ---- publish ----------------------------------------------------------------------------------------
+cmd_publish() {
+  local reviewed=0; [ "${1:-}" = "--footprint-reviewed" ] && reviewed=1
+  in_progress && die "finish the rebase first (vn sync --continue)"
+  local ref cand=0 promoted=0; ref=$(work_ref); [ "$ref" = "$CAND_BRANCH" ] && cand=1
+  load_state
+  if [ "$cand" = 1 ]; then
+    [ -n "$PHASE" ] || die "$CAND_BRANCH exists without sync state: inspect it, then 'vn sync --abort'"
+    [ "$PHASE" = done ] || die "the sync/rework on $CAND_BRANCH is not finished (vn sync --continue / vn rework --done)"
+  elif [ "$PHASE" = promoted ]; then promoted=1
+  fi
+  cmd_verify "$ref" || die "refusing to publish: fix the verify failures first"
+  if [ -f "$STATE_DIR/footprint-changed" ] && [ "$reviewed" = 0 ]; then die "the last sync/rework changed my footprint in upstream files; review it, then: vn publish --footprint-reviewed"; fi
+  if [ ! -f "$STATE_DIR/gate-ok-$(git rev-parse "$ref^{tree}")" ]; then
+    [ "${VN_SKIP_GATE:-}" = 1 ] || die "no passing 'vn gate' recorded for this exact content; run 'vn gate' first"
+    note "!! VN_SKIP_GATE=1: publishing WITHOUT a passing gate (emergency use only)"
+  fi
+  git fetch --quiet origin || die "cannot reach origin"
+  local base new_main expected origin_main origin_mirror ok
+  base=$(stack_base "$ref"); new_main=$(git rev-parse "$ref")
+  origin_main=$(git rev-parse -q --verify "refs/remotes/origin/$STACK_BRANCH" || true)
+  origin_mirror=$(git rev-parse -q --verify "refs/remotes/origin/$MIRROR_BRANCH" || true)
+  expected=$new_main; { [ "$cand" = 1 ] || [ "$promoted" = 1 ]; } && expected=$OLD_MAIN
+  if [ -n "$origin_main" ] && ! git merge-base --is-ancestor "$origin_main" "$expected"; then
+    die "origin/$STACK_BRANCH ($(short "$origin_main")) has commits that are not in your local history (GitHub 'Sync fork' clicked, or another machine published): see RUNBOOK 'origin moved'"
+  fi
+  if [ -n "$origin_mirror" ] && [ "$origin_mirror" != "$base" ]; then
+    ok=0
+    git merge-base --is-ancestor "$origin_mirror" "$base" && ok=1
+    git merge-base --is-ancestor "$origin_mirror" "refs/remotes/$UPSTREAM_REMOTE/$UPSTREAM_BRANCH" 2>/dev/null && ok=1
+    [ -n "$OLD_BASE" ] && [ "$origin_mirror" = "$OLD_BASE" ] && ok=1
+    [ "$ok" = 1 ] || die "origin/$MIRROR_BRANCH holds a commit that is not upstream's ($(short "$origin_mirror")): see RUNBOOK 'origin moved'"
+  fi
+  if [ "$cand" = 1 ]; then      # promote locally in one transaction, keep an archive of the replaced main
+    printf 'update refs/heads/%s %s %s\ncreate refs/archive/%s/main %s\nupdate refs/heads/%s %s\n' \
+      "$STACK_BRANCH" "$new_main" "$OLD_MAIN" "$TS" "$OLD_MAIN" "$MIRROR_BRANCH" "$base" | git update-ref --stdin
+    set_phase promoted
+    git checkout --quiet "$STACK_BRANCH"; git branch --quiet -D "$CAND_BRANCH"
+  else
+    git update-ref "refs/heads/$MIRROR_BRANCH" "$base"
+  fi
+  local args=(--atomic "--force-with-lease=refs/heads/$STACK_BRANCH:${origin_main}" "--force-with-lease=refs/heads/$MIRROR_BRANCH:${origin_mirror}")
+  local refs=("refs/heads/$STACK_BRANCH:refs/heads/$STACK_BRANCH" "$base:refs/heads/$MIRROR_BRANCH") a
+  if [ "$(git config --bool vn.pushArchives || echo false)" = true ]; then
+    local remote_archives; remote_archives=$(git ls-remote origin 'refs/archive/*' | awk '{print $2}')
+    for a in $(git for-each-ref --format='%(refname)' refs/archive); do
+      printf '%s\n' "$remote_archives" | grep -qxF "$a" || refs+=("$a:$a")
+    done
+  fi
+  VN_PUBLISH=1 git push "${args[@]}" origin "${refs[@]}" || die "push failed - nothing on GitHub changed; fix the cause and run 'vn publish' again"
+  rm -f "$STATE" "$STATE_DIR/footprint-changed"
+  git fetch --quiet origin || true
+  note "published: origin/$STACK_BRANCH=$(short "$STACK_BRANCH")  origin/$MIRROR_BRANCH=$(short "$base")"
+}
+
+# ---- setup / build / run ----------------------------------------------------------------------------
+cmd_setup() {
+  [ -d "$TOP/Fork/hooks" ] || die "run 'vn setup' on a branch that contains Fork/ (main)"
+  cfg() { git config "$1" "$2"; }
+  cfg core.autocrlf false; cfg core.eol lf; cfg core.fileMode false; cfg core.checkStat minimal; cfg core.trustctime false
+  cfg merge.conflictStyle zdiff3; cfg pull.ff only; cfg push.default nothing; cfg rerere.enabled false
+  cfg gc.reflogExpire never; cfg gc.reflogExpireUnreachable never
+  cfg "branch.$STACK_BRANCH.mergeOptions" --ff-only; cfg "branch.$MIRROR_BRANCH.mergeOptions" --ff-only
+  git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1 || git remote add "$UPSTREAM_REMOTE" https://github.com/w0otdev/V-Notch.git
+  cfg "remote.$UPSTREAM_REMOTE.fetch" "+refs/heads/$UPSTREAM_BRANCH:refs/remotes/$UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
+  cfg "remote.$UPSTREAM_REMOTE.tagOpt" --no-tags
+  git remote set-url --push "$UPSTREAM_REMOTE" DISABLED
+  cfg remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+  [ -n "$(git config user.email || true)" ] || note "!! no git identity: git config user.name '...' && git config user.email '...'"
+  local hooks_dir h; hooks_dir=$(git rev-parse --path-format=absolute --git-path hooks); mkdir -p "$hooks_dir"
+  for h in "${HOOKS[@]}"; do cp -f "$TOP/Fork/hooks/$h" "$hooks_dir/$h"; chmod +x "$hooks_dir/$h"; done
+  cp -f "$TOP/Fork/vn" "$STATE_DIR/vn"; chmod +x "$STATE_DIR/vn"
+  [ -f "$TOP/CLAUDE.md" ] && cp -f "$TOP/CLAUDE.md" "$STATE_DIR/CLAUDE.md"
+  note "setup done: repo config applied, hooks installed (${HOOKS[*]}), tool copy at $STATE_DIR/vn"
+}
+cmd_build() { dn build V-Notch.csproj -c "${1:-Debug}" -nologo -v:m -nr:false; }
+cmd_test()  { dn test "$TEST_PROJECT" -c Debug --filter "$FAST_FILTER${1:+&($1)}" -nologo; }
+cmd_run() {
+  if /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq V-Notch.exe" /NH 2>/dev/null | grep -qi 'V-Notch.exe'; then
+    die "V-Notch is running. Quit it first (tray icon -> Exit): a dev build shares its single-instance lock and settings."
+  fi
+  cmd_build Debug
+  local exe='bin\Debug\net8.0-windows10.0.19041.0\win-x64\V-Notch.exe'
+  note "starting $exe (settings: %APPDATA%\\V-Notch, shared with the installed app; do not toggle 'Start with Windows' here)"
+  /mnt/c/Windows/System32/cmd.exe /c start "" "$exe"
+}
+cmd_native() {
+  note "compiling the native DLL from source (proves the C++ toolchain; overwrites the committed DLL in the working tree)"
+  dn msbuild V-Notch.csproj -t:BuildNativeDll -p:Configuration=Release -p:SkipNativeCompile=false -p:NativeFastCompile=true -nologo -v:m -nr:false
+  git status --short -- Native/out
+  note "to go back to upstream's committed DLL: git restore Native/out/VNotch.Native.dll"
+}
+
+usage() {
+  cat <<'EOF'
+vn - workflow helper for the faridfox fork of V-Notch (see Fork/docs/RUNBOOK.md)
+  status                      what changed upstream, state of my stack, anything that needs attention
+  sync [--now|<commit>]       prepare: replay my commits onto upstream (default: newest commit >= 24h old)
+  sync --continue | --abort   after resolving a conflict / drop the prepared sync
+  rework [--done|--abort]     edit my own commits on a candidate branch (drop, reorder, reword, split)
+  move <branch>               re-base a feat/* branch onto main (or up/* onto upstream) after a sync
+  verify [ref]                structural checks of the stack (no build)
+  gate                        Release build (warnings = errors) + locale check + fast tests vs pure upstream
+  baseline [commit]           full fast test run on pure upstream (cached for later gates)
+  publish [--footprint-reviewed]   push main + master (+ archive) atomically; needs verify + gate
+  setup                       apply repo git config and install the git hooks (after a fresh clone)
+  build [Debug|Release] | test [filter] | run | native
+EOF
+}
+
+case "${1:-status}" in
+  status)   shift || true; cmd_status "$@" ;;
+  sync)     shift; cmd_sync "$@" ;;
+  rework)   shift; cmd_rework "$@" ;;
+  move)     shift; cmd_move "$@" ;;
+  verify)   shift; cmd_verify "$@" ;;
+  gate)     shift; cmd_gate "$@" ;;
+  baseline) shift; cmd_baseline "$@" ;;
+  publish)  shift; cmd_publish "$@" ;;
+  setup)    shift; cmd_setup "$@" ;;
+  build)    shift; cmd_build "$@" ;;
+  test)     shift; cmd_test "$@" ;;
+  run)      shift; cmd_run "$@" ;;
+  native)   shift; cmd_native "$@" ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac

@@ -1,0 +1,2 @@
+# fork scripts and hooks run under bash: keep them LF everywhere
+* text=auto eol=lf
