@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# faridfox fork: keep CLAUDE.md (the fork's working rules) present on branches cut from upstream, where it is not tracked.
+gd=$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0
+if [ -d "$gd/rebase-merge" ] || [ -d "$gd/rebase-apply" ]; then exit 0; fi
+case "${GIT_REFLOG_ACTION:-}" in *rebase*) exit 0 ;; esac
+common=$(git rev-parse --path-format=absolute --git-common-dir) || exit 0
+top=$(git rev-parse --show-toplevel) || exit 0
+mkdir -p "$common/vn"
+if git cat-file -e HEAD:CLAUDE.md 2>/dev/null; then
+  git show HEAD:CLAUDE.md > "$common/vn/CLAUDE.md"
+elif [ ! -e "$top/CLAUDE.md" ] && [ -f "$common/vn/CLAUDE.md" ]; then
+  cp "$common/vn/CLAUDE.md" "$top/CLAUDE.md"
+fi
+exit 0
