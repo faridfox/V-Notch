@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# faridfox fork guard: main and master are never rebased directly ($1 = upstream, $2 = branch, empty = current).
+b=${2:-$(git symbolic-ref --quiet --short HEAD || true)}
+case "$b" in
+  main|master)
+    echo "pre-rebase (fork guard): $b is never rebased directly. Upstream changes: 'Fork/vn sync'. Editing your own commits: 'Fork/vn rework'." >&2
+    exit 1 ;;
+esac
+exit 0

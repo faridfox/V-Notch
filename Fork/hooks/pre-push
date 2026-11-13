@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# faridfox fork guard. Args: $1 remote name, $2 url. Stdin: <local ref> <local sha> <remote ref> <remote sha>
+remote="$1"
+zero=0000000000000000000000000000000000000000
+fail() { printf 'pre-push (fork guard): %s\n' "$*" >&2; exit 1; }
+[ "$remote" = upstream ] && fail "never push to upstream (w0otdev/V-Notch); contributions go through a pull request from the fork, and only when the owner decides."
+while read -r lref lsha rref rsha; do
+  [ -n "$lref" ] || continue
+  case "$rref" in
+    refs/heads/main|refs/heads/master|refs/archive/*)
+      [ "${VN_PUBLISH:-}" = 1 ] || fail "$rref is only pushed by 'Fork/vn publish' (it runs the checks first)." ;;
+    refs/tags/*)
+      [ "$lsha" = "$zero" ] && continue
+      if [ "$rref" = refs/tags/v2.2.0 ] && [ "$(git rev-parse "$lsha^{commit}")" = 2fb9e775bb5366c7b6138ba5c9de376de76a359a ]; then continue; fi
+      fail "do not push tags ($rref): v* tags trigger upstream's CI/release workflows (see RUNBOOK 'GitHub Actions')." ;;
+    refs/heads/up/*)
+      [ "$lsha" = "$zero" ] && continue
+      base=$(git merge-base refs/remotes/upstream/master "$lsha" 2>/dev/null) || fail "cannot find the upstream base of $lref; run 'git fetch upstream' first."
+      bad=$(git diff --name-only "$base" "$lsha" -- Fork Tests/Fork Directory.Build.targets CLAUDE.md)
+      [ -z "$bad" ] || fail "$lref contains fork-only files (contribution branches must look like upstream): $bad"
+      git diff "$base" "$lsha" | grep -q '^+.*FORK(' && fail "$lref still contains FORK( markers."
+      git log --format=%B "$base..$lsha" | grep -Eiq 'co-authored-by:.*(claude|anthropic)|generated with \[?claude code' && fail "$lref has AI attribution lines in its commit messages."
+      ;;
+  esac
+done
+exit 0
