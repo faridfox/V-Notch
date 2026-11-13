@@ -1,0 +1,3 @@
+# Upstream ignores all Markdown; the fork tracks its own docs.
+!*.md
+!*.cmd
