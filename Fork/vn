@@ -465,7 +465,7 @@ cmd_publish() {
 # ---- setup / build / run ----------------------------------------------------------------------------
 cmd_setup() {
   [ -d "$TOP/Fork/hooks" ] || die "run 'vn setup' on a branch that contains Fork/ (main)"
-  cfg() { git config "$1" "$2"; }
+  cfg() { git config --replace-all "$1" "$2"; }
   cfg core.autocrlf false; cfg core.eol lf; cfg core.fileMode false; cfg core.checkStat minimal; cfg core.trustctime false
   cfg merge.conflictStyle zdiff3; cfg pull.ff only; cfg push.default nothing; cfg rerere.enabled false
   cfg gc.reflogExpire never; cfg gc.reflogExpireUnreachable never
