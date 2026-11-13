@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# faridfox fork guard: no merge commits on the stack or the mirror.
+branch=$(git symbolic-ref --quiet --short HEAD || true)
+case "$branch" in
+  main|master|sync/next)
+    echo "pre-merge-commit (fork guard): no merge commits on $branch. Undo: git merge --abort. Upstream only comes in through 'Fork/vn sync'." >&2
+    exit 1 ;;
+esac
+exit 0
