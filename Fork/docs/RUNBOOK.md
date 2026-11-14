@@ -71,12 +71,14 @@ Local state lives in `.git/vn/` (sync state, gate stamps, test baselines, logs, 
 
 Prerequisites on Windows: .NET SDK **8.0.423 exactly** (upstream's `global.json` disables roll-forward;
 installer from https://dotnet.microsoft.com/download/dotnet/8.0), Git for Windows, and for native work
-VS Build Tools 2022 with the C++ x64 tools (MSVC 14.44 — the same linker upstream uses). In WSL: git, python3.
+VS Build Tools 2022 with the C++ x64 tools (MSVC 14.44 — the same linker upstream uses), Python 3 (the `py`
+launcher) and the GitHub CLI signed in as faridfox. Everything runs from **Git Bash** (since 2026-11-14 this
+project works natively on Windows; `Fork/vn` also runs from WSL as a fallback, via `/mnt/c/dev/V-Notch`).
 
 ```bash
 git clone -c core.autocrlf=false -c core.eol=lf -c core.fileMode=false \
-    git@github.com:faridfox/V-Notch.git /mnt/c/dev/V-Notch
-cd /mnt/c/dev/V-Notch
+    git@github.com:faridfox/V-Notch.git /c/dev/V-Notch
+cd /c/dev/V-Notch
 git config user.name "Farid Fox"; git config user.email "faridfox@outlook.com"
 git switch main            # if the clone did not already check it out
 bash Fork/vn setup         # repo config, upstream remote, hooks
