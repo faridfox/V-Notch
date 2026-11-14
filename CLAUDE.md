@@ -23,12 +23,13 @@ Run `Fork/vn status` (bash, from WSL, in `/mnt/c/dev/V-Notch`) and deal with any
 
 `status` · `sync` (bring in upstream) · `sync --continue|--abort` · `rework` (edit my commits) ·
 `verify` · `gate` (Release build, warnings = errors, locale check, tests compared with pure upstream) ·
-`publish` (the only thing that pushes `main`/`master`) · `setup` (after a fresh clone) ·
+`publish` (the only thing that pushes `main`/`master`) · `install` (make the gated `main` your daily
+V-Notch; restarts the app) · `rollback` · `setup` (after a fresh clone) ·
 `build` / `test [filter]` / `run` / `native`.
 
 Typical cycles:
 - **Bring in upstream** (before any feature, after each upstream release, at least weekly):
-  `vn sync` → resolve stops if any → `vn gate` → `vn publish`.
+  `vn sync` → resolve stops if any → `vn gate` → `vn publish` → `vn install`.
 - **Feature:** `git switch -c feat/x main` → code + tests → squash to one commit
   (`git reset --soft main && git commit`) → `git switch main && git merge --ff-only feat/x` →
   `vn gate` → `vn publish`. Later small fixes: `git commit --fixup=<commit>` on main (folded at the next sync).
