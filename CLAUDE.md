@@ -7,7 +7,9 @@ every upstream change and every fork change. Procedures and reasons: `Fork/docs/
 
 ## Start of every session
 
-Run `Fork/vn status` (bash, from WSL, in `/mnt/c/dev/V-Notch`) and deal with anything marked `!!` first.
+Run `Fork/vn status` (Git Bash, in `C:\dev\V-Notch`) and deal with anything marked `!!` first.
+This project runs natively on Windows: Git for Windows (Git Bash), Windows `gh` (signed in as faridfox),
+.NET SDK 8.0.423, MSVC 14.44. `Fork/vn` also still works from WSL (`/mnt/c/dev/V-Notch`) as a fallback.
 
 ## Branches
 
@@ -60,7 +62,7 @@ Typical cycles:
 - Build/test only through `vn` (it never overwrites the committed native DLL; if `git status` ever shows
   `Native/out/VNotch.Native.dll` modified: `git restore Native/out/VNotch.Native.dll`).
   Never run `scripts/r.ps1` (kills the running app), `scripts/d.ps1`, `scripts/f.ps1` or `dotnet format`;
-  don't use Visual Studio's git features in this repo. All git writes go through WSL git.
+  don't use Visual Studio's git features in this repo. Use one git for writes: Git for Windows; never switch between it and WSL git in the middle of a sync.
 - The installed official V-Notch shares the single-instance lock and `%APPDATA%\V-Notch` with dev builds:
   it must be closed before `vn run`; never toggle "Start with Windows" from a dev build.
 - Git identity is repo-local (Farid Fox <faridfox@outlook.com>); never change git config outside this repo.
