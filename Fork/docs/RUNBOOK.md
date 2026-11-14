@@ -177,8 +177,9 @@ upstream re-implemented its own way does not: remove your commit with a rework, 
 solution with warnings as errors (upstream CI does the same) → `Tools/validate_locales.py` → fast test suite
 (`Category!=DesktopIntegration`). Failing tests are re-run once (flaky ones are reported, not counted), the
 rest are compared with **pure upstream at your base**: failures that also happen there are *inherited*
-(reported, not blamed on the fork). Comparisons use a cached full baseline (`vn baseline <sha>`) or a
-targeted run in the sibling worktree `C:\dev\V-Notch.baseline`. A pass writes a stamp for that exact content;
+(reported, not blamed on the fork). A cached full baseline (`vn baseline <sha>`) answers first; any failure it
+does not explain is re-run on pure upstream right away, in the sibling worktree `C:\dev\V-Notch.baseline`,
+because timing and rendering tests depend on the machine's state (load, a locked or sleeping screen). A pass writes a stamp for that exact content;
 `vn publish` requires it. Logs: `.git/vn/gate/<UTC>/`.
 
 Side effects of upstream's test suite on this machine (seen on 2026-11-14): it writes test-host entries into the
@@ -253,20 +254,30 @@ the gate instead of failing silently.
 Dev runs: `Fork/vn run` (refuses while the installed V-Notch runs: same single-instance lock and settings).
 Never toggle "Start with Windows" from a dev build (it would repoint autostart at `bin\Debug`).
 
-Daily use (not set up yet — do it deliberately the first time):
-1. Back up `%APPDATA%\V-Notch`.
-2. Publish into its own folder, keeping the previous build for rollback:
-   ```bash
-   "/mnt/c/Program Files/dotnet/dotnet.exe" publish V-Notch.csproj -c Release -r win-x64 --self-contained false \
-     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false -p:RestoreLockedMode=true \
-     -p:InformationalVersion=<upstream version>+faridfox.<n> -p:IncludeSourceRevisionInInformationalVersion=false \
-     -o 'C:\Users\farid\AppData\Local\Programs\V-Notch-fork\next'
-   ```
-   then (app closed) rename `current` → `previous`, `next` → `current`.
-3. Version stamp: always `+faridfox.<n>` build metadata, never a `-suffix` (the updater ranks
-   `2.3.2-anything` *below* 2.3.2 and would offer the official release).
-4. Keep the official install as a fallback. Its uninstaller deletes `%APPDATA%\V-Notch`, so back up first if
-   you ever remove it. Locally built files have no "downloaded from the internet" mark, so no warnings.
+**Daily use — your fork build is your V-Notch** (set up 2026-11-14):
+
+- `Fork/vn install` publishes the *gated* `main` into `%LOCALAPPDATA%\Programs\V-Notch-fork\current`
+  (framework-dependent single-file build, same layout as the official installer; version
+  `<upstream version>+faridfox.<commit>`). Before swapping it checks that the published native DLL is upstream's
+  committed one and that the exe embeds the fork update key, not the official one. Then it stops the running
+  V-Notch, keeps the old build as `previous`, turns off "Check for updates automatically" in `settings.json`
+  (copy kept in `.git/vn/install/`) and deletes `update-cache.json`, repoints the shortcuts, and starts the
+  new build (`--no-start` to skip).
+- **After every sync or feature:** `vn gate` → `vn publish` → `vn install`. `vn status` tells you when the
+  installed build is older than `main`.
+- **Something wrong with a new build:** `Fork/vn rollback` swaps `current` and `previous` (run again to undo).
+- **Shortcuts:** Desktop and Start-menu `V-Notch` start the fork build; Start-menu `V-Notch (official)` starts
+  the untouched official 2.3.1 install as a fallback. The official installer's original shortcuts are saved in
+  `.git/vn/install/original-shortcuts/` (copy them back to undo).
+- **Settings are shared** with the official app (`%APPDATA%\V-Notch`), so switching between the two keeps your
+  settings. Never run both at once (single-instance lock).
+- **Don'ts:** don't use the app's own "Uninstall" button and don't run the official uninstaller: both delete
+  `%APPDATA%\V-Notch` (and the official uninstaller removes the Start-menu folder with these shortcuts).
+  Don't click "Download update": a fork build can never accept an official update (it fails safely).
+- "Start with Windows" is off. If you turn it on in the fork build's Settings, it registers
+  `V-Notch-fork\current\V-Notch.exe`, which stays valid across `vn install` and `vn rollback`.
+- Version stamps are always `+faridfox.<commit>` build metadata, never a `-suffix` (the updater ranks
+  `2.3.2-anything` *below* 2.3.2 and would offer the official release).
 
 ## 11. Contributing upstream
 
@@ -328,7 +339,8 @@ Forks start with Actions disabled. To enable later (e.g. before a first contribu
 ## 14. Reference
 
 `Fork/vn` commands: `status`, `sync [--now|<sha>|--continue|--abort]`, `rework [--done|--abort]`,
-`verify [ref]`, `gate`, `baseline [sha]`, `publish [--footprint-reviewed]`, `setup`, `build [Debug|Release]`,
+`verify [ref]`, `gate`, `baseline [sha]`, `publish [--footprint-reviewed]`, `install [--no-start]`,
+`rollback`, `setup`, `build [Debug|Release]`,
 `test [filter]`, `run`, `native`.
 
 Hooks: `pre-commit` (no commits on `master`, no merge commits on `main`, no DLL/Version-line changes),
