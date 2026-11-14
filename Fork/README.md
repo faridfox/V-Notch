@@ -24,6 +24,7 @@ upstream change, needs work), `upstream-candidate`, `offered upstream (<link>)`,
 | Commit subject | What it does | Upstream files touched | Status |
 |---|---|---|---|
 | `fork: infrastructure` | workflow tooling, rules, update guard, native-DLL protection | none | active |
+| `fork: daily-driver install` | `vn install` / `vn rollback`: the gated fork build is the everyday V-Notch | none | active |
 
 ## Licence
 
