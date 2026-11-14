@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # vn - workflow helper for the faridfox personal fork of V-Notch.
-# Run from WSL inside the working copy (/mnt/c/dev/V-Notch). Only `vn publish` pushes anything.
+# Run from Git Bash (Windows) or WSL inside the working copy (C:\dev\V-Notch). Only `vn publish` pushes anything.
 # Every rule here is explained in Fork/docs/RUNBOOK.md.
 set -euo pipefail
 export GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true   # never wait for an editor, whoever runs this
@@ -26,7 +26,21 @@ ATTENTION=(global.json Directory.Build.props Directory.Build.targets .github/wor
   NuGet.Config)
 HOOKS=(pre-commit commit-msg pre-merge-commit pre-rebase pre-push post-checkout)
 SETTLE_HOURS=${VN_SETTLE_HOURS:-24}            # upstream amends fresh commits; by default take only older ones
-DOTNET="${VN_DOTNET:-/mnt/c/Program Files/dotnet/dotnet.exe}"
+# ---- environment: Git Bash on Windows (preferred) or WSL -------------------------------------------
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) VN_ENV=gitbash; WIN_ROOT=/c ;;
+  *)                    VN_ENV=wsl;     WIN_ROOT=/mnt/c ;;
+esac
+SYS32="$WIN_ROOT/Windows/System32"
+POWERSHELL="$SYS32/WindowsPowerShell/v1.0/powershell.exe"
+DOTNET="${VN_DOTNET:-$WIN_ROOT/Program Files/dotnet/dotnet.exe}"
+to_unix() { if [ "$VN_ENV" = gitbash ]; then cygpath -u "$1"; else wslpath -u "$1"; fi; }
+to_win()  { if [ "$VN_ENV" = gitbash ]; then cygpath -w "$1"; else wslpath -w "$1"; fi; }
+winexe()  { MSYS_NO_PATHCONV=1 "$@"; }      # keep /FLAGS of Windows tools from being rewritten as paths by Git Bash
+py() {                                      # Python 3 (Windows launcher under Git Bash), output without CR
+  if [ "$VN_ENV" = gitbash ]; then winexe "$SYS32/../py.exe" -3 "$@" | tr -d '\r'; return "${PIPESTATUS[0]}"
+  else python3 "$@"; fi
+}
 TEST_PROJECT=Tests/VNotch.Tests.csproj
 FAST_FILTER='Category!=DesktopIntegration'
 export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
@@ -43,7 +57,7 @@ STATE="$STATE_DIR/sync-state"
 BASELINE_DIR="${VN_BASELINE_DIR:-$(dirname "$TOP")/$(basename "$TOP").baseline}"
 # A sync rewinds the working tree to upstream (where this file does not exist): always run from a copy.
 SELF=$(readlink -f "$0")
-if [ -z "${VN_REEXEC:-}" ] && [ "$SELF" != "$STATE_DIR/vn.run" ]; then
+if [ -z "${VN_REEXEC:-}" ] && ! [ "$SELF" -ef "$STATE_DIR/vn.run" ]; then
   cp -f "$SELF" "$STATE_DIR/vn.run"
   VN_REEXEC=1 exec bash "$STATE_DIR/vn.run" "$@"
 fi
@@ -119,7 +133,7 @@ cmd_status() {
   fi
   if [ -f "$STATE_DIR/gate-ok-$(git rev-parse "$STACK_BRANCH^{tree}")" ]; then note "gate       : passed for the current content of $STACK_BRANCH"
   else note "gate       : not run for the current content of $STACK_BRANCH"; fi
-  local root built; root=$(git config vn.installRoot || true)
+  local root built; root=$(git config vn.installRoot || true); case "$root" in [A-Za-z]:*) root=$(to_unix "$root") ;; esac
   if [ -n "$root" ] && [ -f "$root/current/fork-build.txt" ]; then
     built=$(sed -n 's/^commit=//p' "$root/current/fork-build.txt")
     if [ "$built" = "$(git rev-parse "$STACK_BRANCH")" ]; then note "daily build: up to date ($(sed -n 's/^version=//p' "$root/current/fork-build.txt"))"
@@ -340,7 +354,7 @@ if c is not None:
     sys.stderr.write("    tests: total=%s passed=%s failed=%s not-run=%s\n"%(c.get("total"),c.get("passed"),c.get("failed"),c.get("notExecuted")))
 for n in sorted(failed): print(n)
 '
-app_running() { /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq V-Notch.exe" /NH 2>/dev/null | grep -qi 'V-Notch.exe'; }
+app_running() { winexe "$SYS32/tasklist.exe" /FI "IMAGENAME eq V-Notch.exe" /NH 2>/dev/null | grep -qi 'V-Notch.exe'; }
 names_filter() { local n f=""; for n in "$@"; do f="${f:+$f|}FullyQualifiedName=$n"; done; printf '%s' "$f"; }
 run_tests() {      # $1 checkout dir, $2 label, $3 filter -> prints failing test names
   local dir=$1 label=$2 filter=$3 trx
@@ -349,7 +363,7 @@ run_tests() {      # $1 checkout dir, $2 label, $3 filter -> prints failing test
       --logger "trx;LogFileName=$label.trx" --results-directory TestResults/vn --blame-hang-timeout 120s ) \
       > "$LOG_DIR/$label.log" 2>&1 || true
   [ -f "$trx" ] || die "no test results were produced; see $LOG_DIR/$label.log"
-  python3 -I -c "$TRX_PY" "$trx"
+  py -I -c "$TRX_PY" "$(to_win "$trx")"
 }
 prepare_baseline() { # $1 upstream commit -> clean build of it in the sibling baseline worktree
   local base=$1
@@ -396,7 +410,7 @@ cmd_gate() {
   note "-- build Release, warnings as errors"
   dn build V-Notch.sln -c Release --no-restore -warnaserror -nologo -v:q -nr:false -clp:NoSummary -p:SkipNativeCompile=true > "$LOG_DIR/build.log" 2>&1 \
     || { grep -E 'error|warning' "$LOG_DIR/build.log" | head -30; die "build failed; see $LOG_DIR/build.log"; }
-  note "-- locale files"; python3 -I Tools/validate_locales.py > "$LOG_DIR/locales.log" 2>&1 || { cat "$LOG_DIR/locales.log"; die "locale validation failed"; }
+  note "-- locale files"; py -I Tools/validate_locales.py > "$LOG_DIR/locales.log" 2>&1 || { cat "$LOG_DIR/locales.log"; die "locale validation failed"; }
   note "-- fast test suite"
   local app_before=0; app_running && app_before=1
   local failed again inherited mine flaky
@@ -478,7 +492,6 @@ cmd_publish() {
 }
 
 # ---- daily-driver install ---------------------------------------------------------------------------
-POWERSHELL=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
 ps_run() {         # run a PowerShell script (passed as text) without quoting trouble
   local enc; enc=$(printf '%s' "\$ProgressPreference = 'SilentlyContinue'
 $1" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)
@@ -488,9 +501,9 @@ win_folder() { ps_run "[Environment]::GetFolderPath('$1')"; }
 stop_app() {       # returns 1 if V-Notch was not running
   app_running || return 1
   note "stopping the running V-Notch ..."
-  /mnt/c/Windows/System32/taskkill.exe /IM V-Notch.exe >/dev/null 2>&1 || true
+  winexe "$SYS32/taskkill.exe" /IM V-Notch.exe >/dev/null 2>&1 || true
   local i; for i in $(seq 1 20); do app_running || return 0; sleep 0.5; done
-  /mnt/c/Windows/System32/taskkill.exe /F /IM V-Notch.exe >/dev/null 2>&1 || true
+  winexe "$SYS32/taskkill.exe" /F /IM V-Notch.exe >/dev/null 2>&1 || true
   for i in $(seq 1 20); do app_running || return 0; sleep 0.5; done
   die "could not stop V-Notch; quit it from its tray icon and run this again"
 }
@@ -498,13 +511,13 @@ start_app() { note "starting $1"; ps_run "Start-Process -FilePath '$1' -WorkingD
 install_paths() {  # sets ROOT_W (Windows) and ROOT (WSL) of the fork install
   ROOT_W="$(win_folder LocalApplicationData)\\Programs\\V-Notch-fork"
   [ "$ROOT_W" != '\Programs\V-Notch-fork' ] || die "cannot resolve %LOCALAPPDATA%"
-  ROOT=$(wslpath -u "$ROOT_W")
+  ROOT=$(to_unix "$ROOT_W")
 }
 settings_disable_updates() {  # a fork build can never accept an official update; stop it from re-checking every 90 s
-  local dir; dir="$(wslpath -u "$(win_folder ApplicationData)")/V-Notch"
+  local dir; dir="$(to_unix "$(win_folder ApplicationData)")/V-Notch"
   if [ -f "$dir/settings.json" ]; then
     cp -f "$dir/settings.json" "$STATE_DIR/install/settings.json.before-$1"
-    python3 -I - "$dir/settings.json" <<'PY'
+    py -I - "$(to_win "$dir/settings.json")" <<'PY'
 import re, sys
 p = sys.argv[1]; b = open(p, "rb").read()
 n = re.sub(rb'("AutoCheckUpdates"\s*:\s*)true', rb"\1false", b)
@@ -520,7 +533,7 @@ update_shortcuts() {  # $1 = fork exe (Windows path). Desktop + Start menu 'V-No
   official_w="$(win_folder LocalApplicationData)\\Programs\\V-Notch\\V-Notch.exe"
   mkdir -p "$STATE_DIR/install/original-shortcuts"
   for f in "$desktop_w\\V-Notch.lnk" "$programs_w\\V-Notch.lnk"; do   # keep the official installer's originals once
-    local u; u=$(wslpath -u "$f")
+    local u; u=$(to_unix "$f")
     [ -f "$u" ] && [ ! -f "$STATE_DIR/install/original-shortcuts/$(basename "$(dirname "$u")")-V-Notch.lnk" ] && cp "$u" "$STATE_DIR/install/original-shortcuts/$(basename "$(dirname "$u")")-V-Notch.lnk"
   done
   ps_run "
@@ -557,7 +570,7 @@ cmd_install() {    # publish the gated main as the daily-driver build
   [ -z "$(git status --porcelain --untracked-files=no)" ] || { git status --short --untracked-files=no; die "publishing modified tracked files"; }
   [ -f "$ROOT/next/V-Notch.exe" ] || die "publish produced no V-Notch.exe"
   cmp -s "$ROOT/next/VNotch.Native.dll" Native/out/VNotch.Native.dll || die "the published native DLL differs from upstream's committed one"
-  python3 -I - "$ROOT/next/V-Notch.exe" Fork/msbuild/no-update-public-key.pem Security/update-public-key.pem <<'PY' || die "update guard check failed: refusing to install a build that could accept official updates"
+  py -I - "$(to_win "$ROOT/next/V-Notch.exe")" Fork/msbuild/no-update-public-key.pem Security/update-public-key.pem <<'PY' || die "update guard check failed: refusing to install a build that could accept official updates"
 import sys
 flat = lambda b: b.replace(b"\r", b"").replace(b"\n", b"")
 body = lambda path: flat(b"".join(open(path, "rb").read().replace(b"\r\n", b"\n").strip().split(b"\n")[1:-1]))
@@ -572,7 +585,7 @@ PY
   rm -rf "$ROOT/previous"
   [ -d "$ROOT/current" ] && mv "$ROOT/current" "$ROOT/previous"
   mv "$ROOT/next" "$ROOT/current"
-  git config vn.installRoot "$ROOT"
+  git config vn.installRoot "$ROOT_W"
   update_shortcuts "$ROOT_W\\current\\V-Notch.exe"
   [ "$nostart" = 1 ] || start_app "$ROOT_W\\current\\V-Notch.exe"
   note "installed $info as your daily V-Notch ($ROOT_W\\current); previous build kept for 'vn rollback'"
@@ -609,13 +622,12 @@ cmd_setup() {
 cmd_build() { dn build V-Notch.csproj -c "${1:-Debug}" -nologo -v:m -nr:false; }
 cmd_test()  { dn test "$TEST_PROJECT" -c Debug --filter "$FAST_FILTER${1:+&($1)}" -nologo; }
 cmd_run() {
-  if /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq V-Notch.exe" /NH 2>/dev/null | grep -qi 'V-Notch.exe'; then
+  if app_running; then
     die "V-Notch is running. Quit it first (tray icon -> Exit): a dev build shares its single-instance lock and settings."
   fi
   cmd_build Debug
-  local exe='bin\Debug\net8.0-windows10.0.19041.0\win-x64\V-Notch.exe'
-  note "starting $exe (settings: %APPDATA%\\V-Notch, shared with the installed app; do not toggle 'Start with Windows' here)"
-  /mnt/c/Windows/System32/cmd.exe /c start "" "$exe"
+  note "dev build (settings: %APPDATA%\\V-Notch, shared with the installed app; do not toggle 'Start with Windows' here)"
+  start_app "$(to_win "$TOP/bin/Debug/net8.0-windows10.0.19041.0/win-x64/V-Notch.exe")"
 }
 cmd_native() {
   note "compiling the native DLL from source (proves the C++ toolchain; overwrites the committed DLL in the working tree)"
