@@ -119,6 +119,12 @@ cmd_status() {
   fi
   if [ -f "$STATE_DIR/gate-ok-$(git rev-parse "$STACK_BRANCH^{tree}")" ]; then note "gate       : passed for the current content of $STACK_BRANCH"
   else note "gate       : not run for the current content of $STACK_BRANCH"; fi
+  local root built; root=$(git config vn.installRoot || true)
+  if [ -n "$root" ] && [ -f "$root/current/fork-build.txt" ]; then
+    built=$(sed -n 's/^commit=//p' "$root/current/fork-build.txt")
+    if [ "$built" = "$(git rev-parse "$STACK_BRANCH")" ]; then note "daily build: up to date ($(sed -n 's/^version=//p' "$root/current/fork-build.txt"))"
+    else note "daily build: $(sed -n 's/^version=//p' "$root/current/fork-build.txt") - older than $STACK_BRANCH; after 'vn gate': 'vn install'"; fi
+  fi
   local b r
   for b in $(git for-each-ref --format='%(refname:short)' refs/heads/feat refs/heads/up); do
     r=$(git rev-parse -q --verify "refs/remotes/origin/$b" || true)
@@ -356,10 +362,16 @@ prepare_baseline() { # $1 upstream commit -> clean build of it in the sibling ba
 }
 base_failures() {  # $1 base, rest: test names -> prints the names that ALSO fail on pure upstream
   local base=$1; shift
-  local full="$STATE_DIR/baseline/$base.full"
-  if [ -f "$full" ]; then printf '%s\n' "$@" | grep -Fxf "$full" || true; return 0; fi
-  prepare_baseline "$base"
-  run_tests "$BASELINE_DIR" "baseline-targeted" "$(names_filter "$@")"
+  local full="$STATE_DIR/baseline/$base.full" known="" n rest=()
+  [ -f "$full" ] && known=$(printf '%s\n' "$@" | grep -Fxf "$full" || true)
+  for n in "$@"; do printf '%s\n' "$known" | grep -qxF "$n" || rest+=("$n"); done
+  [ -z "$known" ] || printf '%s\n' "$known"
+  [ "${#rest[@]}" -gt 0 ] || return 0
+  # Timing/rendering tests depend on the machine's state right now (load, locked screen): before blaming the
+  # fork, run the same tests on pure upstream under the same conditions.
+  note "    re-running ${#rest[@]} test(s) on pure upstream $(short "$base") under the same conditions" >&2
+  prepare_baseline "$base" >&2
+  run_tests "$BASELINE_DIR" "baseline-targeted" "$(names_filter "${rest[@]}")"
 }
 cmd_baseline() {   # full fast-suite run on a pure upstream commit; result is cached for every later gate
   local base; base=$(git rev-parse --verify "${1:-$(stack_base "$STACK_BRANCH")}^{commit}")
@@ -465,6 +477,115 @@ cmd_publish() {
   note "published: origin/$STACK_BRANCH=$(short "$STACK_BRANCH")  origin/$MIRROR_BRANCH=$(short "$base")"
 }
 
+# ---- daily-driver install ---------------------------------------------------------------------------
+POWERSHELL=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+ps_run() {         # run a PowerShell script (passed as text) without quoting trouble
+  local enc; enc=$(printf '%s' "\$ProgressPreference = 'SilentlyContinue'
+$1" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)
+  "$POWERSHELL" -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "$enc" | tr -d '\r'
+}
+win_folder() { ps_run "[Environment]::GetFolderPath('$1')"; }
+stop_app() {       # returns 1 if V-Notch was not running
+  app_running || return 1
+  note "stopping the running V-Notch ..."
+  /mnt/c/Windows/System32/taskkill.exe /IM V-Notch.exe >/dev/null 2>&1 || true
+  local i; for i in $(seq 1 20); do app_running || return 0; sleep 0.5; done
+  /mnt/c/Windows/System32/taskkill.exe /F /IM V-Notch.exe >/dev/null 2>&1 || true
+  for i in $(seq 1 20); do app_running || return 0; sleep 0.5; done
+  die "could not stop V-Notch; quit it from its tray icon and run this again"
+}
+start_app() { note "starting $1"; ps_run "Start-Process -FilePath '$1' -WorkingDirectory '${1%\\*}'"; }
+install_paths() {  # sets ROOT_W (Windows) and ROOT (WSL) of the fork install
+  ROOT_W="$(win_folder LocalApplicationData)\\Programs\\V-Notch-fork"
+  [ "$ROOT_W" != '\Programs\V-Notch-fork' ] || die "cannot resolve %LOCALAPPDATA%"
+  ROOT=$(wslpath -u "$ROOT_W")
+}
+settings_disable_updates() {  # a fork build can never accept an official update; stop it from re-checking every 90 s
+  local dir; dir="$(wslpath -u "$(win_folder ApplicationData)")/V-Notch"
+  if [ -f "$dir/settings.json" ]; then
+    cp -f "$dir/settings.json" "$STATE_DIR/install/settings.json.before-$1"
+    python3 -I - "$dir/settings.json" <<'PY'
+import re, sys
+p = sys.argv[1]; b = open(p, "rb").read()
+n = re.sub(rb'("AutoCheckUpdates"\s*:\s*)true', rb"\1false", b)
+if n != b:
+    open(p, "wb").write(n); print("    turned off 'Check for updates automatically' in settings.json")
+PY
+  else note "    no settings.json yet: after the first start, turn off 'Check for updates' in Settings"; fi
+  rm -f "$dir/update-cache.json"
+}
+update_shortcuts() {  # $1 = fork exe (Windows path). Desktop + Start menu 'V-Notch' start the fork; 'V-Notch (official)' the fallback
+  local fork_exe=$1 desktop_w programs_w official_w f
+  desktop_w=$(win_folder Desktop); programs_w="$(win_folder Programs)\\V-Notch"
+  official_w="$(win_folder LocalApplicationData)\\Programs\\V-Notch\\V-Notch.exe"
+  mkdir -p "$STATE_DIR/install/original-shortcuts"
+  for f in "$desktop_w\\V-Notch.lnk" "$programs_w\\V-Notch.lnk"; do   # keep the official installer's originals once
+    local u; u=$(wslpath -u "$f")
+    [ -f "$u" ] && [ ! -f "$STATE_DIR/install/original-shortcuts/$(basename "$(dirname "$u")")-V-Notch.lnk" ] && cp "$u" "$STATE_DIR/install/original-shortcuts/$(basename "$(dirname "$u")")-V-Notch.lnk"
+  done
+  ps_run "
+\$ErrorActionPreference = 'Stop'
+\$shell = New-Object -ComObject WScript.Shell
+function Set-Link([string]\$Path, [string]\$Target, [string]\$Description) {
+  New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName(\$Path)) | Out-Null
+  \$l = \$shell.CreateShortcut(\$Path); \$l.TargetPath = \$Target; \$l.WorkingDirectory = [IO.Path]::GetDirectoryName(\$Target)
+  \$l.IconLocation = \$Target + ',0'; \$l.Description = \$Description; \$l.Save()
+}
+Set-Link '$desktop_w\\V-Notch.lnk' '$fork_exe' 'V-Notch (faridfox fork)'
+Set-Link '$programs_w\\V-Notch.lnk' '$fork_exe' 'V-Notch (faridfox fork)'
+if (Test-Path -LiteralPath '$official_w') { Set-Link '$programs_w\\V-Notch (official).lnk' '$official_w' 'Official V-Notch release (fallback)' }
+"
+  note "    shortcuts: Desktop + Start menu 'V-Notch' -> fork build; Start menu 'V-Notch (official)' -> official fallback"
+}
+cmd_install() {    # publish the gated main as the daily-driver build
+  local nostart=0; [ "${1:-}" = "--no-start" ] && nostart=1
+  in_progress && die "finish the rebase first"
+  [ "$(current_branch)" = "$STACK_BRANCH" ] || die "check out $STACK_BRANCH first: only the published stack is installed"
+  load_state; [ -z "$PHASE" ] || die "a sync/rework is pending (vn status)"
+  [ -z "$(git status --porcelain --untracked-files=no)" ] || die "uncommitted changes present"
+  [ -f "$STATE_DIR/gate-ok-$(git rev-parse "$STACK_BRANCH^{tree}")" ] || die "run 'vn gate' first: only gated content is installed"
+  local ver info ts; ts=$(date -u +%Y%m%dT%H%M%SZ)
+  ver=$(sed -n 's:.*<Version>\([0-9.]*\)</Version>.*:\1:p' V-Notch.csproj | head -n 1)
+  info="$ver+faridfox.$(git rev-parse --short=8 HEAD)"
+  install_paths; LOG_DIR="$STATE_DIR/install/$ts"; mkdir -p "$LOG_DIR" "$ROOT"
+  rm -rf "$ROOT/next"
+  note "== publishing $info into $ROOT_W\\next =="
+  dn publish V-Notch.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true \
+     -p:IncludeNativeLibrariesForSelfExtract=false -p:DebugType=none -p:DebugSymbols=false -p:RestoreLockedMode=true \
+     "-p:InformationalVersion=$info" -p:IncludeSourceRevisionInInformationalVersion=false -nologo -v:q -nr:false \
+     -o "$ROOT_W\\next" > "$LOG_DIR/publish.log" 2>&1 || { tail -20 "$LOG_DIR/publish.log"; die "publish failed; see $LOG_DIR/publish.log"; }
+  [ -z "$(git status --porcelain --untracked-files=no)" ] || { git status --short --untracked-files=no; die "publishing modified tracked files"; }
+  [ -f "$ROOT/next/V-Notch.exe" ] || die "publish produced no V-Notch.exe"
+  cmp -s "$ROOT/next/VNotch.Native.dll" Native/out/VNotch.Native.dll || die "the published native DLL differs from upstream's committed one"
+  python3 -I - "$ROOT/next/V-Notch.exe" Fork/msbuild/no-update-public-key.pem Security/update-public-key.pem <<'PY' || die "update guard check failed: refusing to install a build that could accept official updates"
+import sys
+flat = lambda b: b.replace(b"\r", b"").replace(b"\n", b"")
+body = lambda path: flat(b"".join(open(path, "rb").read().replace(b"\r\n", b"\n").strip().split(b"\n")[1:-1]))
+exe = flat(open(sys.argv[1], "rb").read())
+fork_ok, official_absent = body(sys.argv[2]) in exe, body(sys.argv[3]) not in exe
+print("    update guard: fork key embedded=%s, official key absent=%s" % (fork_ok, official_absent))
+sys.exit(0 if fork_ok and official_absent else 1)
+PY
+  printf 'commit=%s\nversion=%s\ninstalled=%s\n' "$(git rev-parse HEAD)" "$info" "$ts" > "$ROOT/next/fork-build.txt"
+  stop_app || true
+  settings_disable_updates "$ts"
+  rm -rf "$ROOT/previous"
+  [ -d "$ROOT/current" ] && mv "$ROOT/current" "$ROOT/previous"
+  mv "$ROOT/next" "$ROOT/current"
+  git config vn.installRoot "$ROOT"
+  update_shortcuts "$ROOT_W\\current\\V-Notch.exe"
+  [ "$nostart" = 1 ] || start_app "$ROOT_W\\current\\V-Notch.exe"
+  note "installed $info as your daily V-Notch ($ROOT_W\\current); previous build kept for 'vn rollback'"
+}
+cmd_rollback() {   # swap the current and previous daily-driver builds
+  install_paths
+  [ -d "$ROOT/previous" ] || die "no previous build to roll back to"
+  local was=0; stop_app && was=1 || true
+  mv "$ROOT/current" "$ROOT/rollback.tmp"; mv "$ROOT/previous" "$ROOT/current"; mv "$ROOT/rollback.tmp" "$ROOT/previous"
+  note "now installed: $(grep '^version=' "$ROOT/current/fork-build.txt" 2>/dev/null || echo '(unknown build)')  (run 'vn rollback' again to undo)"
+  [ "$was" = 0 ] || start_app "$ROOT_W\\current\\V-Notch.exe"
+}
+
 # ---- setup / build / run ----------------------------------------------------------------------------
 cmd_setup() {
   [ -d "$TOP/Fork/hooks" ] || die "run 'vn setup' on a branch that contains Fork/ (main)"
@@ -515,6 +636,8 @@ vn - workflow helper for the faridfox fork of V-Notch (see Fork/docs/RUNBOOK.md)
   gate                        Release build (warnings = errors) + locale check + fast tests vs pure upstream
   baseline [commit]           full fast test run on pure upstream (cached for later gates)
   publish [--footprint-reviewed]   push main + master (+ archive) atomically; needs verify + gate
+  install [--no-start]        publish the gated main as your daily V-Notch (restarts the app)
+  rollback                    swap back to the previous daily build (run again to undo)
   setup                       apply repo git config and install the git hooks (after a fresh clone)
   build [Debug|Release] | test [filter] | run | native
 EOF
@@ -529,6 +652,8 @@ case "${1:-status}" in
   gate)     shift; cmd_gate "$@" ;;
   baseline) shift; cmd_baseline "$@" ;;
   publish)  shift; cmd_publish "$@" ;;
+  install)  shift; cmd_install "$@" ;;
+  rollback) shift; cmd_rollback "$@" ;;
   setup)    shift; cmd_setup "$@" ;;
   build)    shift; cmd_build "$@" ;;
   test)     shift; cmd_test "$@" ;;
