@@ -45,8 +45,8 @@ Typical cycles:
   `main`/`master` go out only through `vn publish`. The git hooks enforce most of this — never use `--no-verify`.
 - Never push to `upstream`, and never open issues, pull requests or discussions on w0otdev/V-Notch on your
   own initiative: contacting upstream is always the owner's explicit decision.
-- `gh` must run as faridfox and name the repo: `GH_TOKEN=$(gh auth token --user faridfox) gh … -R faridfox/V-Notch`
-  (the machine's active gh account is a work account; without `-R`, gh targets upstream).
+- `gh` must run as faridfox and name the repo: `gh … -R faridfox/V-Notch` (faridfox is the active gh account;
+  if in doubt prefix `GH_TOKEN=$(gh auth token --user faridfox)`. Without `-R`, gh targets upstream).
 - Fork code lives under `Fork/`, fork tests under `Tests/Fork/`. Inside upstream files: as few lines as
   possible, each marked `// FORK(faridfox): why` (XAML: `<!-- FORK(faridfox): why -->`). A plain fix meant
   for upstream: its own commit with the trailer `Upstream-Candidate: yes`.
