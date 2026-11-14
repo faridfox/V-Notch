@@ -181,6 +181,12 @@ rest are compared with **pure upstream at your base**: failures that also happen
 targeted run in the sibling worktree `C:\dev\V-Notch.baseline`. A pass writes a stamp for that exact content;
 `vn publish` requires it. Logs: `.git/vn/gate/<UTC>/`.
 
+Side effects of upstream's test suite on this machine (seen on 2026-11-14): it writes test-host entries into the
+real `%APPDATA%\V-Notch\vnotch-crash.log` and creates empty `WhiteNoise` / `translation-models` folders in
+`%LOCALAPPDATA%\V-Notch`; it did not change `settings.json`. The installed V-Notch also restarted once and exited
+once during gate runs (cause not established), so `vn gate` warns if the app was running before the tests and is
+not afterwards. Keep a backup of `%APPDATA%\V-Notch` (e.g. `C:\dev\backups\`).
+
 `VN_SKIP_GATE=1 Fork/vn publish` exists for emergencies only (e.g. upstream's new SDK not installable yet).
 
 Not covered locally (only by GitHub Actions, section 12): CodeQL, the 70 % coverage threshold, gitleaks,

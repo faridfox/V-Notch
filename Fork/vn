@@ -334,6 +334,7 @@ if c is not None:
     sys.stderr.write("    tests: total=%s passed=%s failed=%s not-run=%s\n"%(c.get("total"),c.get("passed"),c.get("failed"),c.get("notExecuted")))
 for n in sorted(failed): print(n)
 '
+app_running() { /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq V-Notch.exe" /NH 2>/dev/null | grep -qi 'V-Notch.exe'; }
 names_filter() { local n f=""; for n in "$@"; do f="${f:+$f|}FullyQualifiedName=$n"; done; printf '%s' "$f"; }
 run_tests() {      # $1 checkout dir, $2 label, $3 filter -> prints failing test names
   local dir=$1 label=$2 filter=$3 trx
@@ -385,6 +386,7 @@ cmd_gate() {
     || { grep -E 'error|warning' "$LOG_DIR/build.log" | head -30; die "build failed; see $LOG_DIR/build.log"; }
   note "-- locale files"; python3 -I Tools/validate_locales.py > "$LOG_DIR/locales.log" 2>&1 || { cat "$LOG_DIR/locales.log"; die "locale validation failed"; }
   note "-- fast test suite"
+  local app_before=0; app_running && app_before=1
   local failed again inherited mine flaky
   failed=$(run_tests "$TOP" gate-full "$FAST_FILTER")
   mine=""; inherited=""; flaky=""
@@ -401,6 +403,7 @@ cmd_gate() {
   fi
   [ -z "$flaky" ] || { note "    flaky (failed once, passed on re-run):"; printf '%s\n' "$flaky" | sed 's/^/      /'; }
   [ -z "$inherited" ] || { note "    inherited (also fail on pure upstream - not the fork's fault):"; printf '%s\n' "$inherited" | sed 's/^/      /'; }
+  if [ "$app_before" = 1 ] && ! app_running; then note "!! the installed V-Notch was running when the tests started and is not running now: start it again from the Start menu"; fi
   if [ -n "$mine" ]; then note "    FAILING BECAUSE OF THE FORK:"; printf '%s\n' "$mine" | sed 's/^/      /'; die "gate failed"; fi
   if [ -n "$(git status --porcelain --untracked-files=no)" ]; then git status --short --untracked-files=no; die "the build modified tracked files (native DLL? restore with: git restore <path>)"; fi
   { echo "date=$(date -u +%FT%TZ)"; echo "ref=$ref $(git rev-parse "$ref")"; echo "base=$base"; echo "inherited:"; printf '%s\n' "$inherited"; echo "flaky:"; printf '%s\n' "$flaky"; } > "$STATE_DIR/gate-ok-$tree"
