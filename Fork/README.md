@@ -27,6 +27,7 @@ upstream change, needs work), `upstream-candidate`, `offered upstream (<link>)`,
 | `fork: daily-driver install` | `vn install` / `vn rollback`: the gated fork build is the everyday V-Notch | none | active |
 | `fork: run natively on Windows (Git Bash)` | `vn` and the hooks run from Git Bash on Windows (WSL stays a fallback) | none | active |
 | `feat(compact-lyrics): lyrics or title and artist in the collapsed notch` | While music shows in the collapsed notch, a line between the album art and the visualizer shows the current lyric line (Spotify) with a per-word fade in reading direction (right to left for Arabic/Hebrew), or "Title — Artist"; the pill resizes to fit each line (150–600 px). Switch: Settings > Advanced > "Show lyrics in the collapsed notch" (fork settings file). Also brings the shared plumbing: composition hook, fork settings, fork texts, UI attach (`Fork/Core/`) | `Services/ServiceConfigurator.cs` (composition hook), `Windows/MainWindow.AnimationHelpers.cs` (`GetCollapsedWidth`) | active |
+| `feat(line-bar): double-click the notch into a thin progress bar` | Double-click the notch: it hides (upstream's tray "Hide notch") and a thin bar takes its place at the top edge, showing the track's progress, or a plain line when nothing is loaded. One click on the bar (or tray "Show notch") brings the notch back, collapsed | `Windows/MainWindow.xaml.cs` (`ToggleNotchFromClick`) | active |
 
 ## Licence
 
