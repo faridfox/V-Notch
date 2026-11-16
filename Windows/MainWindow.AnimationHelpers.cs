@@ -588,6 +588,7 @@ public partial class MainWindow
         double width = _settings.EnableDynamicIslandMode
             ? _settings.DynamicIslandWidth
             : _settings.Width;
+        width += ForkCompactExtraWidth(); // FORK(faridfox): room for the collapsed-notch lyrics line
 
         return width;
     }

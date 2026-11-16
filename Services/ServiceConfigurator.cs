@@ -73,5 +73,6 @@ public static class ServiceConfigurator
         });
 
         services.AddSingleton<MainWindow>();
+        Fork.ForkServices.Configure(services); // FORK(faridfox): single composition hook
     }
 }

@@ -199,15 +199,21 @@ upstream's update-compatibility probes.
 
 Each recipe is built by the first feature that needs it; keep this section current when you build one.
 
-**Composition hook (once, for all features).** Add as the last statement of
-`Services/ServiceConfigurator.ConfigureServices` (a quiet file):
-`Fork.ForkServices.Configure(services); // FORK(faridfox): single composition hook`
-and create `Fork/Core/ForkServices.cs` (`namespace VNotch.Fork; internal static class ForkServices`).
-Register fork services, modules and Spotlight providers there. Keep `Configure` free of side effects: upstream
-tests call `ConfigureServices`. UI start-up: register a WPF class handler for `MainWindow`'s `Loaded` event
-(`EventManager.RegisterClassHandler(typeof(MainWindow), FrameworkElement.LoadedEvent, …)` — the mechanism
-upstream uses in `Services/LocalizedPresentation.cs`) from a one-time initializer that only runs when
-`Application.Current is App`.
+**Composition hook (built by `feat(compact-lyrics)`).** The last statement of
+`Services/ServiceConfigurator.ConfigureServices` is
+`Fork.ForkServices.Configure(services); // FORK(faridfox): single composition hook`, which calls
+`Fork/Core/ForkServices.cs`. Register fork services, modules and Spotlight providers there. Keep `Configure` free of
+side effects: upstream tests call `ConfigureServices`. UI start-up: `Fork/Core/ForkUi.cs` registers WPF class handlers
+for the `Loaded` event of `MainWindow` and `SettingsWindow` (the mechanism upstream uses in
+`Services/LocalizedPresentation.cs`), only when `Application.Current is App` (upstream's tests use a plain
+`Application`, so nothing attaches there), and wraps each attach in a try/catch that logs (`FORK-UI`): a fork bug must
+not take the notch down. Add a feature's attach call there.
+
+**Reaching upstream window internals.** A fork-owned `public partial class MainWindow` (or `SettingsWindow`) file
+under `Fork/Features/<X>/` may use the window's private fields and methods: every use is compile-checked at each sync,
+unlike reflection. Prefix all its members with `Fork`/`_fork` so they can't collide with upstream's. Upstream calls
+into it only through marked hook lines (example: `GetCollapsedWidth` → `ForkCompactExtraWidth()`). Tests can build
+windows with upstream's own fixtures (`GreetingAcceptanceTests.MainWindowFixture`) and call the attach method directly.
 
 **New widget / module.** Code under `Fork/Features/<X>/`: data/timers in a module derived from upstream's
 `Modules/NotchModuleBase` (frozen upstream), visuals in a UserControl with `Attach / ApplySettings / Dispose`
@@ -215,16 +221,22 @@ like `Controls/WeatherWidget`. Insert it at runtime into `MainWindow.NotchLiveCo
 marks "Add live widgets inside this group". Verify on first use that greetings/animations treat it correctly.
 Do not join the expanded-widget cycle (7 upstream files) unless unavoidable.
 
-**New setting.** A small fork service storing `%APPDATA%\V-Notch-faridfox\settings.json` (official builds
-delete unknown properties from the shared `%APPDATA%\V-Notch\settings.json`, and `SettingsMigrator` numbers
-belong to upstream). React to committed settings via `ISettingsApplicationService.SettingsApplied`. UI rows:
-append at runtime to an existing settings panel; style rows with the `SettingRowBorder` resource and a hidden
-keywords TextBlock so upstream's settings search indexes them.
+**New setting (built by `feat(compact-lyrics)`).** Add a property to `ForkSettingsService.Data`
+(`Fork/Core/ForkSettingsService.cs`), stored in `%APPDATA%\V-Notch-faridfox\settings.json` (official builds delete
+unknown properties from the shared `%APPDATA%\V-Notch\settings.json`, and `SettingsMigrator` numbers belong to
+upstream). It follows the settings window's model: a toggle calls `Preview…` (live), the window's
+`ISettingsApplicationService.SettingsApplied` (Save/Apply) calls `CommitPreview`, the window's `Closed` calls
+`RevertPreview`. UI rows: insert at runtime from a fork `partial class SettingsWindow` (example:
+`Fork/Features/CompactLyrics/SettingsWindow.CompactLyrics.cs`), built like upstream's own runtime rows
+(`SettingsWindow.Privacy.cs`): a `SettingRowBorder` border, CheckBox + `SettingHintText` hint + a collapsed keywords
+TextBlock, inserted before the settings search first indexes rows (at `Loaded`).
 
-**New text.** `Fork/Locales/en.json` (+ other languages as wanted), embedded by `Fork.targets` with a
-LogicalName that does **not** start with `VNotch.Locales.`, read through a fork accessor (`ForkText.T("key")`)
-that follows `Loc.LanguageChanged` and falls back to English. Never `Loc.Get("literal")` for fork keys:
-upstream's `LocalizationTests` require every such literal in all 17 locale files with real Hindi.
+**New text (built by `feat(compact-lyrics)`).** `Fork/Locales/en.json` (+ other languages as wanted, same keys —
+`Tests/Fork/ForkTextTests` checks), embedded by `Fork.targets` as `VNotchFork.Locales.<lang>.json` (never a name
+starting with `VNotch.Locales.`), read through `ForkText.T("key")`, which follows the app language and falls back to
+English, then to the key. Re-apply texts on `Loc.LanguageChanged`. Never pass a fork key to upstream's `Loc.Get`:
+upstream's `LocalizationTests` scan every `.cs`/`.xaml` file in the repository — **comments included** — for
+`Loc.Get(` followed by a quoted literal, and require each such key in all 17 locale files with real Hindi.
 
 **Change existing behaviour.** Prefer events and decorators registered through the composition hook. If an
 upstream method must change: one marked line calling into a fork method
