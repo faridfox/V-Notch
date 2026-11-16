@@ -25,6 +25,8 @@ upstream change, needs work), `upstream-candidate`, `offered upstream (<link>)`,
 |---|---|---|---|
 | `fork: infrastructure` | workflow tooling, rules, update guard, native-DLL protection | none | active |
 | `fork: daily-driver install` | `vn install` / `vn rollback`: the gated fork build is the everyday V-Notch | none | active |
+| `fork: run natively on Windows (Git Bash)` | `vn` and the hooks run from Git Bash on Windows (WSL stays a fallback) | none | active |
+| `feat(compact-lyrics): lyrics or title and artist in the collapsed notch` | While music shows in the collapsed notch, a line between the album art and the visualizer shows the current lyric line (Spotify) with a per-word glow in reading direction (right to left for Arabic/Hebrew), in the style of upstream's "Searching for lyrics..." shimmer, or "Title — Artist" (also while paused). The pill has one fixed width (300 px) while music shows; a line too long for it scrolls smoothly so the word being sung stays in view (the other way for right-to-left lines), with faded edges. Switch: Settings > Advanced > "Show lyrics in the collapsed notch" (fork settings file). Also brings the shared plumbing: composition hook, fork settings, fork texts, UI attach (`Fork/Core/`) | `Services/ServiceConfigurator.cs` (composition hook), `Windows/MainWindow.AnimationHelpers.cs` (`GetCollapsedWidth`) | active |
 
 ## Licence
 

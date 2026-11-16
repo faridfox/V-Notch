@@ -19,5 +19,9 @@
          untouched (upstream's compatibility gate compares that file). Tests/Fork/ForkIdentityTests checks this. -->
     <EmbeddedResource Remove="Security\update-public-key.pem" />
     <EmbeddedResource Include="$(MSBuildThisFileDirectory)no-update-public-key.pem" LogicalName="VNotch.UpdatePublicKey.pem" />
+
+    <!-- Fork texts (Fork/Core/ForkText.cs). The LogicalName must not start with "VNotch.Locales.": that prefix is
+         upstream's, and its LocalizationTests would then require every fork key in all of upstream's locale files. -->
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\Locales\*.json" LogicalName="VNotchFork.Locales.%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>
