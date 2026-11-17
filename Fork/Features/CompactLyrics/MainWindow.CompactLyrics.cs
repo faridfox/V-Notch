@@ -64,6 +64,55 @@ public partial class MainWindow
     internal bool ForkCompactTextAttached => _forkCompactHost != null;
     internal string ForkCompactTextShown => _forkCompactShown;
 
+    internal const double ForkCompactFontSize = 13;
+    /// <summary>How far the clipping host reaches above and below the album-art row (it is 22 px tall in a 34 px pill).</summary>
+    internal const double ForkCompactHostOverhang = 4;
+
+    /// <summary>
+    /// The line's TextBlock: 13 px Bold, upstream's title style and text policy (Ideal formatting, animated hinting).
+    /// The padding keeps tall glyphs inside the line's own box: WPF sizes the line from the first font (SF Pro), while
+    /// Arabic falls back to Segoe UI, whose letters reach further above and below.
+    /// </summary>
+    internal static TextBlock ForkCreateCompactTextBlock(Style? titleStyle)
+    {
+        var text = new TextBlock
+        {
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            TextWrapping = TextWrapping.NoWrap,
+            TextAlignment = TextAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        if (titleStyle != null && titleStyle.TargetType.IsAssignableFrom(typeof(TextBlock))) text.Style = titleStyle;
+        text.FontSize = ForkCompactFontSize;
+        text.FontWeight = FontWeights.Bold;
+        text.Padding = new Thickness(0, 5, 0, 5);
+        text.Foreground = new SolidColorBrush(ForkCompactTextColor);
+        TextOptions.SetTextFormattingMode(text, TextFormattingMode.Ideal);
+        TextOptions.SetTextHintingMode(text, TextHintingMode.Animated);
+        return text;
+    }
+
+    /// <summary>
+    /// The clipping host in the pill's middle column. It stretches over the whole album-art row and reaches
+    /// <see cref="ForkCompactHostOverhang"/> px beyond it, so Arabic descenders and marks are never cut, while its desired
+    /// height stays below the row's 22 px (the pill's layout is unchanged).
+    /// </summary>
+    internal static Grid ForkCreateCompactTextHost(TextBlock text)
+    {
+        var host = new Grid
+        {
+            IsHitTestVisible = false,
+            ClipToBounds = true,
+            Margin = new Thickness(8, -ForkCompactHostOverhang, 6, -ForkCompactHostOverhang),
+            VerticalAlignment = VerticalAlignment.Stretch,
+        };
+        host.Children.Add(text);
+        Grid.SetRow(host, 0);
+        Grid.SetColumn(host, 1);
+        return host;
+    }
+
     /// <summary>Called from upstream's GetCollapsedWidth: every "back to rest" animation then fits the current line.</summary>
     internal double ForkCompactExtraWidth() => _forkCompactHost != null && _isMusicCompactMode ? _forkCompactExtra : 0;
 
@@ -73,34 +122,10 @@ public partial class MainWindow
         _forkSettings = settings;
 
         _forkCompactTextShift = new TranslateTransform();
-        var text = new TextBlock
-        {
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            TextWrapping = TextWrapping.NoWrap,
-            TextAlignment = TextAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Center,
-            RenderTransform = _forkCompactTextShift,
-        };
-        if (TryFindResource("TitleText") is Style titleStyle && titleStyle.TargetType.IsAssignableFrom(typeof(TextBlock)))
-            text.Style = titleStyle;
-        text.FontSize = 11;
-        text.FontWeight = FontWeights.SemiBold;
-        text.Foreground = new SolidColorBrush(ForkCompactTextColor);
-        // Upstream's text policy (TextShiftRegressionPolicyTests): Ideal formatting, animated hinting.
-        TextOptions.SetTextFormattingMode(text, TextFormattingMode.Ideal);
-        TextOptions.SetTextHintingMode(text, TextHintingMode.Animated);
-
-        var host = new Grid
-        {
-            IsHitTestVisible = false,
-            ClipToBounds = true,
-            Margin = new Thickness(8, 0, 6, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        host.Children.Add(text);
-        Grid.SetRow(host, 0);
-        Grid.SetColumn(host, 1);
+        var titleStyle = TryFindResource("TitleText") as Style;
+        var text = ForkCreateCompactTextBlock(titleStyle);
+        text.RenderTransform = _forkCompactTextShift;
+        var host = ForkCreateCompactTextHost(text);
         // Follow the album art. Every upstream surface that takes over the collapsed pill (volume, clipboard,
         // notifications, countdown) hides the art, so the text leaves with it instead of overlapping that surface.
         BindingOperations.SetBinding(host, OpacityProperty, new Binding(nameof(Opacity)) { Source = CompactThumbnailBorder });
