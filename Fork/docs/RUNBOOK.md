@@ -215,6 +215,11 @@ unlike reflection. Prefix all its members with `Fork`/`_fork` so they can't coll
 into it only through marked hook lines (example: `GetCollapsedWidth` → `ForkCompactExtraWidth()`). Tests can build
 windows with upstream's own fixtures (`GreetingAcceptanceTests.MainWindowFixture`) and call the attach method directly.
 
+**Service internals via a fork partial.** Upstream services are `partial` too (e.g. `MediaDetectionService`): a fork
+file in `namespace VNotch.Services` can add an internal interface implementation that reads private state (example:
+`Fork/Features/MediaSwitcher/MediaDetectionService.Sessions.cs`). Keep it read-only; let window code reach it through
+a seam (`Func<IForkX?>`) so tests can stub it and upstream's fakes simply leave the feature inert.
+
 **New widget / module.** Code under `Fork/Features/<X>/`: data/timers in a module derived from upstream's
 `Modules/NotchModuleBase` (frozen upstream), visuals in a UserControl with `Attach / ApplySettings / Dispose`
 like `Controls/WeatherWidget`. Insert it at runtime into `MainWindow.NotchLiveContent` — the grid upstream
