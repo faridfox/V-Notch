@@ -1,5 +1,6 @@
 {
   "compactLyrics.setting": "Show lyrics in the collapsed notch",
   "compactLyrics.hint": "On: while Spotify plays, the collapsed notch shows the current lyric line. Off, for other players, or when no lyrics are found: it shows the song title and artist.",
-  "compactLyrics.keywords": "lyrics karaoke song title artist singer collapsed compact notch pill now playing"
+  "compactLyrics.keywords": "lyrics karaoke song title artist singer collapsed compact notch pill now playing",
+  "nowPlaying.album": "Album:"
 }
