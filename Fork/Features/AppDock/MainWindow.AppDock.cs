@@ -116,7 +116,7 @@ public partial class MainWindow
             RenderTransform = _forkDockTipShift,
         };
         var tipLayer = new Canvas { IsHitTestVisible = false };
-        Canvas.SetLeft(_forkDockTip, ForkDockGap + ForkDockPanelWidth + 6);
+        Canvas.SetLeft(_forkDockTip, ForkDockGap + ForkDockPanelWidth + 6);   // ForkPlaceDockForTabs moves it
         tipLayer.Children.Add(_forkDockTip);
 
         double hostWidth = ForkDockGap + ForkDockPanelWidth;
@@ -172,6 +172,7 @@ public partial class MainWindow
         var host = _forkDockHost;
         if (show)
         {
+            ForkPlaceDockForTabs();
             bool island = _settings.EnableDynamicIslandMode;
             _forkDockPill.CornerRadius = island ? new CornerRadius(14) : new CornerRadius(0, 0, 14, 14);
             _forkDockPill.BorderThickness = island ? new Thickness(0.8) : new Thickness(0.8, 0, 0.8, 0.8);
@@ -202,7 +203,18 @@ public partial class MainWindow
     private bool ForkDockFits()
     {
         double free = (ActualWidth - NotchBorder.ActualWidth) / 2;
-        return !double.IsFinite(free) || ActualWidth <= 0 || free >= ForkDockGap + ForkDockPanelWidth + 4;
+        double needed = (_forkDockHost?.Width ?? ForkDockGap + ForkDockPanelWidth) + 4;
+        return !double.IsFinite(free) || ActualWidth <= 0 || free >= needed;
+    }
+
+    /// <summary>Moves the bar out past a tabs pill on the right of the notch (Fork/Features/NavTabs), if there is one.</summary>
+    internal void ForkPlaceDockForTabs()
+    {
+        if (_forkDockHost == null || _forkDockTip == null) return;
+        double width = ForkTabsRightReserve() + ForkDockGap + ForkDockPanelWidth;
+        _forkDockHost.Width = width;
+        _forkDockHost.Margin = new Thickness(0, 0, -width, 0);
+        Canvas.SetLeft(_forkDockTip, width + 6);
     }
 
     internal Task ForkRefreshDockAsync()

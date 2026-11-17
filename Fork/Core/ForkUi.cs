@@ -33,12 +33,16 @@ internal static class ForkUi
         Guard(window.ForkAttachPlaybackControls);
         Guard(window.ForkAttachMediaSwitcher);
         Guard(window.ForkAttachAppDock);
+        Guard(() => window.ForkAttachTabsPill(Settings));
     }
 
     private static void OnSettingsWindowLoaded(object sender, RoutedEventArgs e)
     {
         if (sender is SettingsWindow window && ReferenceEquals(e.OriginalSource, window))
+        {
             Guard(() => window.ForkAttachCompactLyricsRow(Settings));
+            Guard(() => window.ForkAttachTabsOptions(Settings));
+        }
     }
 
     // A fork bug must never take the notch down: log it and leave upstream's UI as it is.
