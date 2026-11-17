@@ -34,6 +34,7 @@ internal static class ForkUi
         Guard(window.ForkAttachMediaSwitcher);
         Guard(window.ForkAttachAppDock);
         Guard(() => window.ForkAttachTabsPill(Settings));
+        Guard(window.ForkAttachNotchShape);
     }
 
     private static void OnSettingsWindowLoaded(object sender, RoutedEventArgs e)
