@@ -149,8 +149,9 @@ public sealed class NowPlayingTests
         window.Show();                                     // animations only run in a shown window
         view.AnimateProgressBarHover(true);                // upstream: thick bar, zoomed times, blurred controls
         window.ForkProgressHover(true);                    // the fork's handler runs right after it
-        await WpfFrameWaiter.UntilAsync(() => Math.Abs(view.ProgressBarBg.Height - MainWindow.ForkHoverBarHeight) < 0.05 &&
-            window.ForkProgressKnob!.Opacity > 0.99, "hover look settles", ct);
+        await WpfFrameWaiter.UntilAsync(() => Math.Abs(view.ProgressBarBg.Height - MainWindow.ForkHoverBarHeight) < 0.01 &&
+            window.ForkProgressKnob!.Opacity > 0.999 && view.MediaControls.Opacity > 0.999 &&
+            Math.Abs(view.ProgressBarMainScale.ScaleX - 1) < 0.001, "hover look settles", ct);
         Assert.Equal(MainWindow.ForkHoverBarHeight, view.ProgressBarBg.Height, 1);
         Assert.Equal(1, view.ProgressBarMainScale.ScaleX, 2);
         Assert.Equal(1, view.MediaControls.Opacity, 2);
