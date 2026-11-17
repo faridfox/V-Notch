@@ -110,6 +110,7 @@ public partial class MainWindow
 
     private bool IsScreenPointInsideNotchVisual(InputMonitorService.POINT pt)
     {
+        if (ForkTabsPillContains(pt)) return true; // FORK(faridfox): the tabs pill below/beside the notch is part of it
         if (_hwnd == IntPtr.Zero || NotchWrapper == null || NotchWrapper.ActualWidth <= 0 || NotchWrapper.ActualHeight <= 0)
             return false;
 

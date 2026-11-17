@@ -9,5 +9,17 @@
   "playback.repeat": "Repeat",
   "playback.repeat.all": "Enable repeat",
   "playback.repeat.one": "Enable repeat one",
-  "playback.repeat.off": "Disable repeat"
+  "playback.repeat.off": "Disable repeat",
+  "tabs.position": "Tabs position",
+  "tabs.position.hint": "Keep the page tabs inside the notch, or move them to a pill below or beside it that appears while you point at the open notch.",
+  "tabs.position.top": "Inside the notch",
+  "tabs.position.bottom": "Bottom",
+  "tabs.position.left": "Left",
+  "tabs.position.right": "Right",
+  "tabs.size": "Tabs size",
+  "tabs.size.hint": "Size of the tabs pill below or beside the notch.",
+  "tabs.size.default": "Default",
+  "tabs.size.large": "Large",
+  "tabs.size.larger": "Larger",
+  "tabs.keywords": "tabs navigation pages position bottom left right size pill hover"
 }
