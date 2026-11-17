@@ -30,6 +30,7 @@ internal static class ForkUi
         Guard(() => window.ForkAttachCompactText(Settings));
         Guard(window.ForkAttachLineBar);
         Guard(window.ForkAttachNowPlaying);
+        Guard(window.ForkAttachPlaybackControls);
         Guard(window.ForkAttachMediaSwitcher);
         Guard(window.ForkAttachAppDock);
     }

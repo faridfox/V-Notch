@@ -31,6 +31,7 @@ upstream change, needs work), `upstream-candidate`, `offered upstream (<link>)`,
 | `feat(now-playing): album line and progress knob` | Expanded music view: "Album: <name>" between title and artist (name in the song's colour; hidden for singles and when unknown), evenly spaced; time labels on the progress bar's row; Spotify-style hover on the bar (stays slim, a white knob appears on the end of the played part; upstream's zoom/blur/dim undone). Applied at runtime to upstream's `MediaPlaybackView` | none | active |
 | `feat(media-switcher): switch the shown media source` | A pill on the album art shows the playing app's icon; with several apps or tabs holding media, ‹ › switch between them (upstream's pin), and clicking the icon returns to automatic choice. Sessions are listed by a fork part of `MediaDetectionService` | none | active |
 | `feat(app-dock): open apps beside the expanded notch` | While the notch is open on its Media page, a slim dock beside it shows the open apps (most recent first); a click brings one to the front, the wheel scrolls | none | active |
+| `feat(playback-controls): shuffle, repeat and Spotify-style controls` | Expanded music view controls as five slots: shuffle, previous, a light round play/pause with a dark glyph, next, repeat. Shuffle/repeat use Windows' media controls on the session upstream controls (Spotify supports them; hidden for browsers); the active state is in the song's colour with a dot; repeat cycles off, all, one | none | active |
 
 ## Licence
 
