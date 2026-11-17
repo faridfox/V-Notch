@@ -14,10 +14,11 @@ using static VNotch.Services.AnimationPrimitives;
 
 namespace VNotch;
 
-// faridfox fork: open-apps bar (Fork/README.md ledger), after DeskNotch's apps bar. While the notch is open on its Media
-// page, a slim black panel beside it shows the open apps, most recently used first, two at a time: the mouse wheel
-// pages through them two by two with a slide, hovering an icon shows the app's name in a pill beside it, and a click
-// brings that app to the front. Icons and names are the ones the taskbar uses (Store apps included: AppIdentity).
+// faridfox fork: open-apps bar (Fork/README.md ledger), in the design of DeskNotch's apps bar: a slim near-black panel
+// beside the open notch (Media page) with the open apps, most recently used first, two at a time. 32 px icons in 34 px
+// slots; an icon floats up 2 px on hover and gives under the press; apps arrive with a short staggered rise; the wheel
+// pages two by two; hovering shows the app's name in a small round pill beside the bar; a click brings that app to the
+// front. Icons and names are the ones the taskbar uses (Store apps included: AppIdentity).
 //
 // The bar is a child of upstream's NotchWrapper with zero layout width (it draws beside the notch without moving
 // anything): only elements under NotchWrapper receive clicks (MainWindow.IsPointInteractive), and the pointer stays
@@ -27,15 +28,20 @@ namespace VNotch;
 public partial class MainWindow
 {
     internal const int ForkDockVisible = 2;
-    private const double ForkDockIcon = 40;
-    private const double ForkDockCell = 44;
-    private const double ForkDockSpacing = 6;
-    private const double ForkDockPadding = 7;
-    private const double ForkDockPanelWidth = 54;
+    // DeskNotch's apps bar: 34 px slots 8 px apart holding 32 px icons; panel padding 4 / 8 / 4 / 6; bottom corners 12.
+    internal const double ForkDockIcon = 32;
+    internal const double ForkDockCell = 34;
+    private const double ForkDockSpacing = 8;
+    private static readonly Thickness ForkDockPadding = new(4, 8, 4, 6);
+    internal const double ForkDockPanelWidth = 42;
+    private const double ForkDockCorner = 12;
     /// <summary>Gap between the notch and the bar, bridged by a nearly invisible strip so the pointer never leaves the notch.</summary>
     private const double ForkDockGap = 8;
+    private const double ForkDockTipGap = 10;
     private static readonly TimeSpan ForkDockRefreshEvery = TimeSpan.FromSeconds(2);
-    private static readonly Duration ForkDockPageSlide = new(TimeSpan.FromMilliseconds(460));
+    private static readonly Duration ForkDockPageSlide = new(TimeSpan.FromMilliseconds(420));
+    // A spring's settle (DeskNotch: stiffness 420, damping 26 - a little overshoot).
+    private static readonly IEasingFunction ForkDockSpring = ForkFrozenEase(new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.35 });
 
     private Grid? _forkDockHost;
     private Border? _forkDockPill;
@@ -71,21 +77,24 @@ public partial class MainWindow
         if (_forkDockHost != null || _cleanedUp) return;
 
         _forkDockListShift = new TranslateTransform();
-        _forkDockList = new StackPanel { Orientation = Orientation.Vertical, RenderTransform = _forkDockListShift };
+        _forkDockList = new StackPanel { Orientation = Orientation.Vertical, RenderTransform = _forkDockListShift, Width = ForkDockCell };
+        // The list sits on a Canvas: inside a Grid it would be clipped to the visible two apps before it scrolls, and the
+        // next pages would come up empty.
+        var listLayer = new Canvas();
+        listLayer.Children.Add(_forkDockList);
         var viewport = new Grid
         {
+            Width = ForkDockCell,
             Height = ForkDockVisible * ForkDockCell + (ForkDockVisible - 1) * ForkDockSpacing,
             ClipToBounds = true,
             VerticalAlignment = VerticalAlignment.Top,
         };
-        viewport.Children.Add(_forkDockList);
+        viewport.Children.Add(listLayer);
         _forkDockPill = new Border
         {
             Width = ForkDockPanelWidth,
-            Padding = new Thickness(0, ForkDockPadding, 0, ForkDockPadding),
-            Background = ForkFrozenBrush(Color.FromArgb(0xF7, 0x00, 0x00, 0x00)),
-            BorderBrush = ForkFrozenBrush(Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(0.8, 0, 0.8, 0.8),
+            Padding = ForkDockPadding,
+            Background = ForkFrozenBrush(Color.FromRgb(0x0B, 0x0B, 0x0D)),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Top,
             Child = viewport,
@@ -94,9 +103,9 @@ public partial class MainWindow
         // The name pill, beside the bar (outside the host's own box; never takes the mouse).
         _forkDockTipText = new TextBlock
         {
-            FontSize = 12,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = ForkFrozenBrush(Color.FromArgb(0xF2, 0xFF, 0xFF, 0xFF)),
+            FontSize = 10.5,
+            FontWeight = FontWeights.Medium,
+            Foreground = ForkFrozenBrush(Color.FromArgb(0xD9, 0xFF, 0xFF, 0xFF)),
             TextTrimming = TextTrimming.CharacterEllipsis,
             MaxWidth = 180,
         };
@@ -105,18 +114,18 @@ public partial class MainWindow
         _forkDockTip = new Border
         {
             Child = _forkDockTipText,
-            Background = ForkFrozenBrush(Color.FromArgb(0xF2, 0x24, 0x24, 0x26)),
-            BorderBrush = ForkFrozenBrush(Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(0.8),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(9, 4, 9, 5),
+            Background = ForkFrozenBrush(Color.FromRgb(0x1C, 0x1C, 0x1F)),
+            BorderBrush = ForkFrozenBrush(Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(8, 3, 8, 3),
             IsHitTestVisible = false,
             Opacity = 0,
             Visibility = Visibility.Collapsed,
             RenderTransform = _forkDockTipShift,
         };
         var tipLayer = new Canvas { IsHitTestVisible = false };
-        Canvas.SetLeft(_forkDockTip, ForkDockGap + ForkDockPanelWidth + 6);   // ForkPlaceDockForTabs moves it
+        Canvas.SetLeft(_forkDockTip, ForkDockGap + ForkDockPanelWidth + ForkDockTipGap);   // ForkPlaceDockForTabs moves it
         tipLayer.Children.Add(_forkDockTip);
 
         double hostWidth = ForkDockGap + ForkDockPanelWidth;
@@ -174,9 +183,11 @@ public partial class MainWindow
         {
             ForkPlaceDockForTabs();
             bool island = _settings.EnableDynamicIslandMode;
-            _forkDockPill.CornerRadius = island ? new CornerRadius(14) : new CornerRadius(0, 0, 14, 14);
-            _forkDockPill.BorderThickness = island ? new Thickness(0.8) : new Thickness(0.8, 0, 0.8, 0.8);
+            _forkDockPill.CornerRadius = island
+                ? new CornerRadius(ForkDockCorner)
+                : new CornerRadius(0, 0, ForkDockCorner, ForkDockCorner);
             ForkSetDockPage(0, animate: false);
+            ForkDockArrive(0);
             host.Visibility = Visibility.Visible;
             host.IsHitTestVisible = true;
             host.BeginAnimation(OpacityProperty, MakeAnim(host.Opacity, 1, new Duration(TimeSpan.FromMilliseconds(220)), _easeQuadOut, TimeSpan.FromMilliseconds(60)));
@@ -214,7 +225,7 @@ public partial class MainWindow
         double width = ForkTabsRightReserve() + ForkDockGap + ForkDockPanelWidth;
         _forkDockHost.Width = width;
         _forkDockHost.Margin = new Thickness(0, 0, -width, 0);
-        Canvas.SetLeft(_forkDockTip, width + 6);
+        Canvas.SetLeft(_forkDockTip, width + ForkDockTipGap);
     }
 
     internal Task ForkRefreshDockAsync()
@@ -261,43 +272,67 @@ public partial class MainWindow
     {
         var image = new Image { Width = ForkDockIcon, Height = ForkDockIcon, Stretch = Stretch.Uniform };
         RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
-        var scale = new ScaleTransform(1, 1);
+        var press = new ScaleTransform(1, 1);
+        var lift = new TranslateTransform();
+        var motion = new TransformGroup();
+        motion.Children.Add(press);
+        motion.Children.Add(lift);
         var cell = new Border
         {
             Width = ForkDockCell,
             Height = ForkDockCell,
             Margin = new Thickness(0, 0, 0, last ? 0 : ForkDockSpacing),
-            CornerRadius = new CornerRadius(11),
             Background = ForkFrozenBrush(Color.FromArgb(0x01, 0x00, 0x00, 0x00)),
-            HorizontalAlignment = HorizontalAlignment.Center,
             Cursor = Cursors.Hand,
             Child = image,
             Tag = app,
-            RenderTransform = scale,
+            RenderTransform = motion,
             RenderTransformOrigin = new Point(0.5, 0.5),
         };
         int fps = AnimationConfig.TargetFps;
         cell.MouseEnter += (_, _) =>
         {
-            var grow = MakeAnim(1.08, new Duration(TimeSpan.FromMilliseconds(200)), _easeExpOut6, fps);
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, grow);
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, grow);
+            lift.BeginAnimation(TranslateTransform.YProperty, MakeAnim(-2, new Duration(TimeSpan.FromMilliseconds(260)), ForkDockSpring, fps));
             ForkShowDockTip(app, cell);
         };
         cell.MouseLeave += (_, _) =>
         {
-            var rest = MakeAnim(1, new Duration(TimeSpan.FromMilliseconds(180)), _easeExpOut6, fps);
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, rest);
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, rest);
+            lift.BeginAnimation(TranslateTransform.YProperty, MakeAnim(0, new Duration(TimeSpan.FromMilliseconds(240)), ForkDockSpring, fps));
+            var release = MakeAnim(1, new Duration(TimeSpan.FromMilliseconds(200)), ForkDockSpring, fps);
+            press.BeginAnimation(ScaleTransform.ScaleXProperty, release);
+            press.BeginAnimation(ScaleTransform.ScaleYProperty, release);
         };
         // On the press: upstream's outside-click handling closes the notch right after, so the release may never come.
         cell.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true;
+            var give = MakeAnim(0.88, new Duration(TimeSpan.FromMilliseconds(90)), _easeQuadOut, fps);
+            press.BeginAnimation(ScaleTransform.ScaleXProperty, give);
+            press.BeginAnimation(ScaleTransform.ScaleYProperty, give);
             ForkActivateDockApp(app);
         };
         ForkLoadDockIconAsync(image, app).SafeFireAndForget("FORK-APP-DOCK");
         return cell;
+    }
+
+    // DeskNotch's arrival: each visible app rises 6 px from 80 % size and fades in, one after the other.
+    private void ForkDockArrive(int page)
+    {
+        if (_forkDockList == null || AnimationConfig.ReduceMotion) return;
+        int fps = AnimationConfig.TargetFps;
+        for (int i = 0; i < ForkDockVisible; i++)
+        {
+            int index = page * ForkDockVisible + i;
+            if (index >= _forkDockList.Children.Count || _forkDockList.Children[index] is not Border cell) continue;
+            if (cell.RenderTransform is not TransformGroup { Children: [ScaleTransform scale, TranslateTransform lift] }) continue;
+            var delay = TimeSpan.FromMilliseconds(35 * i);
+            var duration = new Duration(TimeSpan.FromMilliseconds(380));
+            cell.BeginAnimation(OpacityProperty, MakeAnim(0, 1, new Duration(TimeSpan.FromMilliseconds(220)), _easeQuadOut, delay));
+            var grow = MakeAnim(0.8, 1, duration, ForkDockSpring, delay);
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, grow);
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, grow);
+            lift.BeginAnimation(TranslateTransform.YProperty, MakeAnim(6, 0, duration, ForkDockSpring, delay));
+        }
     }
 
     // ---- paging: two apps at a time ----
@@ -329,20 +364,7 @@ public partial class MainWindow
         if (!changed) return;
         int fps = AnimationConfig.TargetFps;
         _forkDockListShift.BeginAnimation(TranslateTransform.YProperty, MakeAnim(target, ForkDockPageSlide, _easeExpOut6, fps));
-        // The incoming pair settles in: a short fade and grow, one after the other.
-        for (int i = 0; i < ForkDockVisible; i++)
-        {
-            int index = page * ForkDockVisible + i;
-            if (index >= _forkDockList.Children.Count || _forkDockList.Children[index] is not Border cell) continue;
-            var delay = TimeSpan.FromMilliseconds(60 + 50 * i);
-            cell.BeginAnimation(OpacityProperty, MakeAnim(0.25, 1, new Duration(TimeSpan.FromMilliseconds(320)), _easeQuadOut, delay));
-            if (cell.RenderTransform is ScaleTransform scale)
-            {
-                var pop = MakeAnim(0.82, 1, new Duration(TimeSpan.FromMilliseconds(420)), _easeExpOut6, delay);
-                scale.BeginAnimation(ScaleTransform.ScaleXProperty, pop);
-                scale.BeginAnimation(ScaleTransform.ScaleYProperty, pop);
-            }
-        }
+        ForkDockArrive(page);
     }
 
     // ---- the name pill ----
@@ -354,7 +376,7 @@ public partial class MainWindow
         if (app == null || cell == null || app.Label.Length == 0)
         {
             if (_forkDockTip.Visibility != Visibility.Visible) return;
-            var fade = MakeAnim(0, new Duration(TimeSpan.FromMilliseconds(110)), _easePowerOut3, fps);
+            var fade = MakeAnim(0, new Duration(TimeSpan.FromMilliseconds(80)), _easePowerOut3, fps);
             fade.Completed += (_, _) =>
             {
                 if (_forkDockTip.Opacity < 0.01) _forkDockTip.Visibility = Visibility.Collapsed;
@@ -363,12 +385,13 @@ public partial class MainWindow
             return;
         }
         _forkDockTipText.Text = app.Label;
+        _forkDockTip.CornerRadius = new CornerRadius(10);   // fully round at 10.5 px text
         _forkDockTip.Visibility = Visibility.Visible;
         _forkDockTip.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         double centre = cell.TranslatePoint(new Point(0, cell.ActualHeight / 2), _forkDockHost).Y;
         Canvas.SetTop(_forkDockTip, Math.Round(centre - _forkDockTip.DesiredSize.Height / 2));
-        _forkDockTip.BeginAnimation(OpacityProperty, MakeAnim(1, new Duration(TimeSpan.FromMilliseconds(140)), _easeQuadOut, fps));
-        _forkDockTipShift.BeginAnimation(TranslateTransform.XProperty, MakeAnim(-4, 0, new Duration(TimeSpan.FromMilliseconds(200)), _easeExpOut6, fps));
+        _forkDockTip.BeginAnimation(OpacityProperty, MakeAnim(1, new Duration(TimeSpan.FromMilliseconds(120)), _easeQuadOut, fps));
+        _forkDockTipShift.BeginAnimation(TranslateTransform.XProperty, MakeAnim(-3, 0, new Duration(TimeSpan.FromMilliseconds(160)), _easeExpOut6, fps));
     }
 
     internal bool ForkActivateDockApp(DockApp app)
@@ -385,5 +408,11 @@ public partial class MainWindow
     {
         var icon = await AppIdentity.IconAsync(app);
         if (icon != null) image.Source = icon;
+    }
+
+    private static IEasingFunction ForkFrozenEase(EasingFunctionBase ease)
+    {
+        ease.Freeze();
+        return ease;
     }
 }
