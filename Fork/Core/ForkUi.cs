@@ -29,6 +29,7 @@ internal static class ForkUi
         if (sender is not MainWindow window || !ReferenceEquals(e.OriginalSource, window)) return;
         Guard(() => window.ForkAttachCompactText(Settings));
         Guard(window.ForkAttachLineBar);
+        Guard(window.ForkAttachNowPlaying);
     }
 
     private static void OnSettingsWindowLoaded(object sender, RoutedEventArgs e)
