@@ -22,8 +22,9 @@ public sealed class CompactKaraokeRenderingTests
     [InlineData(Marhaba, true)]
     public void HalfSungWordIsBrightOnTheSideWhereReadingStarts(string word, bool rightToLeft) => SharedStaTestRunner.RunAsync(async ct =>
     {
+        // A quarter of the way in: the glow (brightest) is near the side where reading starts, the rest still dim.
         var line = new KaraokeLine(word, [new WordSpan(0, word.Length, TimeSpan.Zero, TimeSpan.FromSeconds(2))], rightToLeft);
-        var (left, right) = RenderHalves(line, TimeSpan.FromSeconds(1));
+        var (left, right) = RenderHalves(line, TimeSpan.FromSeconds(0.5));
         AssertBrighterAtStart(left, right, rightToLeft);
         await System.Threading.Tasks.Task.CompletedTask;
     });
@@ -59,7 +60,7 @@ public sealed class CompactKaraokeRenderingTests
                 new WordSpan(segments[0].Offset, segments[0].Length, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(11)),
                 new WordSpan(segments[1].Offset, segments[1].Length, TimeSpan.Zero, TimeSpan.FromSeconds(2)),
             ], lineRtl);
-            var (left, right) = RenderHalves(line, TimeSpan.FromSeconds(1), onlyWord: 1);
+            var (left, right) = RenderHalves(line, TimeSpan.FromSeconds(0.5), onlyWord: 1);
             AssertBrighterAtStart(left, right, secondRtl);
             await System.Threading.Tasks.Task.CompletedTask;
         });

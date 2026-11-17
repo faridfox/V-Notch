@@ -28,7 +28,7 @@ namespace VNotch;
 public partial class MainWindow
 {
     /// <summary>Width of the collapsed notch while it shows music (or the configured width, if that is larger).</summary>
-    internal const double ForkCompactWidth = 340;
+    internal const double ForkCompactWidth = 300;
 
     private static readonly TimeSpan ForkCompactTickPlaying = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan ForkCompactTickPaused = TimeSpan.FromMilliseconds(500);
@@ -59,7 +59,7 @@ public partial class MainWindow
     internal Grid? ForkCompactHost => _forkCompactHost;
     internal TextBlock? ForkCompactTextBlock => _forkCompactText;
 
-    internal const double ForkCompactFontSize = 13;
+    internal const double ForkCompactFontSize = 14;
     /// <summary>How far the clipping host reaches above and below the album-art row (it is 22 px tall in a 34 px pill).</summary>
     internal const double ForkCompactHostOverhang = 4;
 
@@ -215,8 +215,8 @@ public partial class MainWindow
         string titleAndArtist = CompactLyricsText.TitleAndArtist(info.CurrentTrack, info.CurrentArtist);
         var plain = new ForkCompactContent("T|" + titleAndArtist, titleAndArtist, null);
         if (!showLyrics || !ForkCanLookUpLyrics(info)) return plain;
-        var lines = ForkLyricsFor(info);
-        if (lines == null) return plain;
+        var lines = ForkLyricsFor(info);   // fetched while paused too, so the line is there on resume
+        if (lines == null || !info.IsPlaying) return plain;   // paused: the song's title and artist
         int index = CompactLyricsText.FindLineIndex(lines, position);
         if (index < 0) return plain;
 

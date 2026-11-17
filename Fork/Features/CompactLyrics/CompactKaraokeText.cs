@@ -19,37 +19,50 @@ namespace VNotch.Fork.Features.CompactLyrics;
 // presenter does neither. Proved on rendered pixels by Tests/Fork/CompactKaraokeRenderingTests.
 internal sealed class CompactKaraokeText
 {
-    /// <summary>Width of the soft edge, as a fraction of the word.</summary>
-    internal const double SoftEdge = 0.35;
-    /// <summary>Opacity of words not sung yet.</summary>
-    internal const byte PendingAlpha = 0x70;
+    /// <summary>Half-width of the glow band that travels through a word, as a fraction of the word.</summary>
+    internal const double SoftEdge = 0.45;
+    /// <summary>Opacity of words not sung yet: the dim level of upstream's "Searching for lyrics..." shimmer.</summary>
+    internal const byte PendingAlpha = 0x69;
+    /// <summary>Opacity of words already sung (the glow itself is fully white).</summary>
+    internal const byte LitAlpha = 0xE6;
     private static readonly TimeSpan ResyncTolerance = TimeSpan.FromMilliseconds(120);
 
-    private sealed class Word(Run run, WordSpan span, GradientStop head, GradientStop tail)
+    // Upstream's shimmer look applied to singing: a bright glow with soft edges travels through each word while it is
+    // sung, leaving it lit. Three stops per word: lit (behind the glow), glow, dim (ahead of it).
+    private sealed class Word(Run run, WordSpan span, GradientStop lit, GradientStop glow, GradientStop dim)
     {
         internal Run Run { get; } = run;
         internal WordSpan Span { get; } = span;
-        internal GradientStop Head { get; } = head;
-        internal GradientStop Tail { get; } = tail;
+        internal GradientStop Lit { get; } = lit;
+        internal GradientStop Glow { get; } = glow;
+        internal GradientStop Dim { get; } = dim;
 
         internal void Hold()
         {
-            double head = Head.Offset, tail = Tail.Offset;
-            Head.BeginAnimation(GradientStop.OffsetProperty, null);
-            Tail.BeginAnimation(GradientStop.OffsetProperty, null);
-            Head.Offset = head;
-            Tail.Offset = tail;
+            foreach (var stop in new[] { Lit, Glow, Dim })
+            {
+                double offset = stop.Offset;
+                stop.BeginAnimation(GradientStop.OffsetProperty, null);
+                stop.Offset = offset;
+            }
         }
+
+        /// <summary>The glow's centre for a progress: before the word at 0, past it at 1.</summary>
+        internal static double Centre(double progress) => -SoftEdge + (1 + 2 * SoftEdge) * progress;
 
         internal void Set(double progress)
         {
-            Head.Offset = -SoftEdge + (1 + SoftEdge) * progress;
-            Tail.Offset = (1 + SoftEdge) * progress;
+            double centre = Centre(progress);
+            Lit.Offset = centre - SoftEdge;
+            Glow.Offset = centre;
+            Dim.Offset = centre + SoftEdge;
         }
     }
 
     private readonly TextBlock _block;
     private readonly Color _sung;
+    private readonly Color _lit;
+    private readonly Color _glow;
     private readonly Color _pending;
     private readonly SolidColorBrush _sungBrush;
     private readonly SolidColorBrush _pendingBrush;
@@ -65,6 +78,8 @@ internal sealed class CompactKaraokeText
         _scroller = scroller;
         _sung = sung;
         _pending = Color.FromArgb(PendingAlpha, sung.R, sung.G, sung.B);
+        _lit = Color.FromArgb(LitAlpha, sung.R, sung.G, sung.B);
+        _glow = Color.FromArgb(0xFF, sung.R, sung.G, sung.B);
         _sungBrush = Frozen(_sung);
         _pendingBrush = Frozen(_pending);
     }
@@ -91,8 +106,9 @@ internal sealed class CompactKaraokeText
             var span = line.Words[i];
             if (span.Offset > offset) _block.Inlines.Add(new Run(line.Text[offset..span.Offset]) { Foreground = _pendingBrush });
             string text = line.Text.Substring(span.Offset, span.Length);
-            var head = new GradientStop(_sung, -SoftEdge);
-            var tail = new GradientStop(_pending, 0);
+            var lit = new GradientStop(_lit, -2 * SoftEdge);
+            var glow = new GradientStop(_glow, -SoftEdge);
+            var dim = new GradientStop(_pending, 0);
             // A run's brush is laid out over its glyphs left to right even inside a mirrored right-to-left paragraph,
             // so an Arabic/Hebrew word needs a right-to-left gradient of its own; a Latin word or number inside an
             // Arabic line still reads left to right. (Tests/Fork/CompactKaraokeRenderingTests checks the pixels.)
@@ -102,11 +118,12 @@ internal sealed class CompactKaraokeText
                 StartPoint = new Point(rtlWord ? 1 : 0, 0.5),
                 EndPoint = new Point(rtlWord ? 0 : 1, 0.5),
             };
-            brush.GradientStops.Add(head);
-            brush.GradientStops.Add(tail);
+            brush.GradientStops.Add(lit);
+            brush.GradientStops.Add(glow);
+            brush.GradientStops.Add(dim);
             var run = new Run(text) { Foreground = brush };
             _block.Inlines.Add(run);
-            words[i] = new Word(run, span, head, tail);
+            words[i] = new Word(run, span, lit, glow, dim);
             offset = span.Offset + span.Length;
         }
         if (offset < line.Text.Length) _block.Inlines.Add(new Run(line.Text[offset..]) { Foreground = _pendingBrush });
@@ -142,8 +159,10 @@ internal sealed class CompactKaraokeText
             TimeSpan delay = word.Span.Start > position ? word.Span.Start - position : TimeSpan.Zero;
             TimeSpan remaining = word.Span.End - (word.Span.Start > position ? word.Span.Start : position);
             if (remaining <= TimeSpan.Zero) { word.Set(1); continue; }
-            Animate(word.Head, 1, remaining, delay, fps);
-            Animate(word.Tail, 1 + SoftEdge, remaining, delay, fps);
+            double end = Word.Centre(1);
+            Animate(word.Lit, end - SoftEdge, remaining, delay, fps);
+            Animate(word.Glow, end, remaining, delay, fps);
+            Animate(word.Dim, end + SoftEdge, remaining, delay, fps);
         }
         _scroller?.Follow(Array.ConvertAll(_words, w => w.Span), position, playing, reduceMotion);
     }

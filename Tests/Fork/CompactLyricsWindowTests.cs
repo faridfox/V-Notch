@@ -63,8 +63,9 @@ public sealed class CompactLyricsWindowTests
         settings.EnableLocalOnlyMode = false;
 
         var media = Media("Song", "Singer", "Spotify");
-        media.IsPlaying = false;
+        media.IsPlaying = true;
         media.Position = TimeSpan.FromSeconds(6);
+        media.LastUpdated = DateTimeOffset.Now;
         Set(window, "_currentMediaInfo", media);
         // Lyrics as if upstream's LyricsService had answered (no network in tests).
         Set(window, "_forkLyricsKey", (media.CurrentTrack, media.CurrentArtist, (int)media.Duration.TotalSeconds, settings.LyricsProviderPriority));
@@ -80,8 +81,15 @@ public sealed class CompactLyricsWindowTests
         Assert.Equal(3, block.Inlines.OfType<System.Windows.Documents.Run>().Count(run => run.Foreground is System.Windows.Media.LinearGradientBrush));
 
         media.Position = TimeSpan.FromSeconds(10);
+        media.LastUpdated = DateTimeOffset.Now;
         window.ForkRefreshCompactText();
         Assert.Equal(VNotch.Fork.Features.CompactLyrics.CompactLyricsText.InstrumentalMark, window.ForkCompactTextShown);
+
+        // Paused: the song's title and artist, not the lyric line.
+        media.IsPlaying = false;
+        media.Position = TimeSpan.FromSeconds(6);
+        window.ForkRefreshCompactText();
+        Assert.Equal("Song — Singer", window.ForkCompactTextShown);
     });
 
     [Fact]
