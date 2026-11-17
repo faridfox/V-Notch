@@ -13,7 +13,8 @@ namespace VNotch.Tests.Fork;
 [Collection("Localization")]
 public sealed class ForkTextTests
 {
-    private static readonly string[] UsedKeys = ["compactLyrics.setting", "compactLyrics.hint", "compactLyrics.keywords", "nowPlaying.album"];
+    private static readonly string[] UsedKeys = ["compactLyrics.setting", "compactLyrics.hint", "compactLyrics.keywords", "nowPlaying.album",
+        "playback.shuffle", "playback.shuffle.on", "playback.shuffle.off", "playback.repeat", "playback.repeat.all", "playback.repeat.one", "playback.repeat.off"];
 
     [Fact]
     public void EveryUsedKeyHasAnEnglishTextInTheEmbeddedTable()
