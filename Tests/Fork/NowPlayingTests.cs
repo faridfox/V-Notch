@@ -69,7 +69,8 @@ public sealed class NowPlayingTests
         view.Arrange(new Rect(view.DesiredSize));
         view.UpdateLayout();
         double Top(FrameworkElement e) => e.TranslatePoint(new Point(0, 0), view).Y;
-        Assert.True(Top(line) >= Top(view.TitleScrollContainer) + view.TitleScrollContainer.ActualHeight - 0.5);
+        // The album line moves up into the title row's empty bottom, below the title's own text.
+        Assert.True(Top(line) >= Top(view.TrackTitle) + view.TrackTitle.ActualHeight - 0.5);
         Assert.True(Top(view.ArtistScrollContainer) >= Top(line) + line.ActualHeight);
 
         window.ForkUpdateAlbumLine(Media("Ripe", ""));

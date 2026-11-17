@@ -28,8 +28,9 @@ namespace VNotch;
 // Fork/Core/ForkUi.cs.
 public partial class MainWindow
 {
-    /// <summary>Space below the album line (the title row already ends with headroom).</summary>
-    internal static readonly Thickness ForkAlbumLineMargin = new(0, 0, 0, 2);
+    /// <summary>Title, album and artist evenly spaced: the title row ends with headroom, so the album line moves up
+    /// into it and leaves the same space below.</summary>
+    internal static readonly Thickness ForkAlbumLineMargin = new(0, -2, 0, 4);
     internal const double ForkKnobSize = 12;
     /// <summary>Bar thickness while hovered (upstream: 10 px; Spotify keeps it slim).</summary>
     internal const double ForkHoverBarHeight = 6;
@@ -66,6 +67,10 @@ public partial class MainWindow
             Visibility = Visibility.Collapsed,
         };
         if (view.TryFindResource("SubtitleText") is Style subtitle) line.Style = subtitle;
+        // The row keeps the main font's line height when a name falls back to a taller font (Arabic): the card has
+        // only a few pixels to spare, more so in the shorter notch (MainWindow.TabsLayout.cs). Ink is not clipped.
+        line.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
+        line.LineHeight = Math.Round(line.FontFamily.LineSpacing * line.FontSize, 2);
         line.Inlines.Add(label);
         line.Inlines.Add(name);
         line.SetBinding(MaxWidthProperty, new Binding(nameof(ActualWidth)) { Source = view.TitleScrollContainer });
