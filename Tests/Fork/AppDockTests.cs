@@ -56,6 +56,22 @@ public sealed class AppDockTests
     }
 
     [Fact]
+    public void StoreAppsAreToldApartByTheirAppIdAndNamed()
+    {
+        const string frame = @"C:\Windows\System32\ApplicationFrameHost.exe";
+        var apps = AppDockWindows.Group(
+        [
+            new DockApp(new IntPtr(1), frame, "Microsoft Store", "Microsoft.WindowsStore_8wekyb3d8bbwe!App", "Microsoft Store"),
+            new DockApp(new IntPtr(2), frame, "Settings", "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel", "Settings"),
+            new DockApp(new IntPtr(3), frame, "Store again", "Microsoft.WindowsStore_8wekyb3d8bbwe!App", "Microsoft Store"),
+            new DockApp(new IntPtr(4), @"C:\WhatsApp\WhatsApp.Root.exe", "WhatsApp", "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App", "WhatsApp"),
+        ]);
+        Assert.Equal([1, 2, 4], apps.Select(a => (int)a.Window));
+        Assert.Equal("Microsoft Store", apps[0].Label);
+        Assert.Equal("Tab", new DockApp(new IntPtr(9), "x.exe", "Tab").Label);   // no name: the window title
+    }
+
+    [Fact]
     public void TheListIsCapped() =>
         Assert.Equal(AppDockWindows.MaxApps,
             AppDockWindows.Group(Enumerable.Range(1, 40).Select(i => new DockApp(new IntPtr(i), $"app{i}.exe", "x"))).Count);
@@ -105,7 +121,7 @@ public sealed class AppDockTests
         await window.ForkRefreshDockAsync();
         Assert.Equal(2, window.ForkDockApps.Count);
 
-        var cells = ((StackPanel)((ScrollViewer)((Border)window.ForkDockHost!.Children[0]).Child).Content).Children;
+        var cells = window.ForkDockList!.Children;
         var press = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonDownEvent };
         ((UIElement)cells[1]).RaiseEvent(press);
         Assert.True(press.Handled);                   // never reaches the notch
@@ -113,6 +129,49 @@ public sealed class AppDockTests
 
         window.ForkUpdateDock(State(NotchView.Media, NotchView.Secondary, true, true));
         Assert.False(window.ForkDockShown);
+    });
+
+    [Fact]
+    public void TwoAppsAtATimeAndTheWheelPagesByTwo() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture();
+        var window = fixture.Window;
+        window.ForkDockSource = () => Enumerable.Range(1, 5).Select(i => new DockApp(new IntPtr(i), $"app{i}.exe", $"App {i}", "", $"App {i}")).ToList();
+        window.ForkAttachAppDock();
+        window.ForkUpdateDock(State(NotchView.Media, NotchView.Media, false, true));
+        await window.ForkRefreshDockAsync();
+        Assert.Equal(2, MainWindow.ForkDockVisible);
+        Assert.Equal(3, window.ForkDockPageCount);           // 5 apps: 2 + 2 + 1
+
+        void Wheel(int delta)
+        {
+            var e = new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, delta) { RoutedEvent = UIElement.PreviewMouseWheelEvent };
+            window.ForkDockHost!.RaiseEvent(e);
+            Assert.True(e.Handled);                          // never reaches upstream's page switching
+        }
+        Wheel(-60);
+        Assert.Equal(0, window.ForkDockPage);                // half a notch (touchpad step): not yet
+        Wheel(-60);
+        Assert.Equal(1, window.ForkDockPage);
+        Wheel(-120);
+        Wheel(-120);
+        Assert.Equal(2, window.ForkDockPage);                // stops at the last page
+        Wheel(120);
+        Assert.Equal(1, window.ForkDockPage);
+    });
+
+    [Fact]
+    public void HoveringAnIconShowsTheAppsName() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture();
+        var window = fixture.Window;
+        window.ForkDockSource = () => [new DockApp(new IntPtr(7), @"C:\Chrome\chrome.exe", "Some tab - Google Chrome", "", "Google Chrome")];
+        window.ForkAttachAppDock();
+        window.ForkUpdateDock(State(NotchView.Media, NotchView.Media, false, true));
+        await window.ForkRefreshDockAsync();
+        var cell = (UIElement)window.ForkDockList!.Children[0];
+        cell.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = UIElement.MouseEnterEvent });
+        Assert.Equal("Google Chrome", window.ForkDockTipText);
     });
 
     [Fact]

@@ -7,8 +7,16 @@ using VNotch.Services;
 
 namespace VNotch.Fork.Features.AppDock;
 
-/// <summary>One app in the dock: the window to bring to the front, its program, its title (tooltip).</summary>
-internal sealed record DockApp(IntPtr Window, string Executable, string Title);
+/// <summary>
+/// One app in the dock: the window to bring to the front, its program, the window title, the app's AppUserModelID when
+/// it is a Store/packaged app, and the app's name (shown in the tooltip).
+/// </summary>
+internal sealed record DockApp(IntPtr Window, string Executable, string Title, string AppId = "", string Name = "")
+{
+    /// <summary>What makes two windows the same app: the package app id, else the program file.</summary>
+    public string Key => AppId.Length > 0 ? "app:" + AppId : Executable;
+    public string Label => Name.Length > 0 ? Name : Title;
+}
 
 /// <summary>What the dock needs to know about a top-level window to decide whether Alt+Tab would show it.</summary>
 internal readonly record struct WindowFacts(
@@ -37,8 +45,8 @@ internal static class AppDockWindows
     }
 
     /// <summary>
-    /// One entry per program, most recently used first (the input is in z-order). Store apps all run in
-    /// ApplicationFrameHost, so each of their windows keeps its own entry.
+    /// One entry per app, most recently used first (the input is in z-order). Store apps are told apart by their app id
+    /// (they all run in ApplicationFrameHost); a frame window without one keeps its own entry.
     /// </summary>
     public static List<DockApp> Group(IEnumerable<DockApp> windows)
     {
@@ -47,8 +55,9 @@ internal static class AppDockWindows
         foreach (var app in windows)
         {
             if (string.IsNullOrWhiteSpace(app.Executable)) continue;
-            bool frameHost = app.Executable.EndsWith("ApplicationFrameHost.exe", StringComparison.OrdinalIgnoreCase);
-            if (!frameHost && !seen.Add(app.Executable)) continue;
+            bool unidentifiedFrame = app.AppId.Length == 0 &&
+                app.Executable.EndsWith("ApplicationFrameHost.exe", StringComparison.OrdinalIgnoreCase);
+            if (!unidentifiedFrame && !seen.Add(app.Key)) continue;
             apps.Add(app);
             if (apps.Count == MaxApps) break;
         }
@@ -76,7 +85,15 @@ internal static class AppDockWindows
                 title.Clear();
                 Win32Interop.GetWindowText(hwnd, title, title.Capacity);
                 var (_, executable) = ProcessNameResolver.TryGetNameAndExecutable(pid);
-                windows.Add(new DockApp(hwnd, executable ?? "", title.ToString()));
+                executable ??= "";
+                string appId = AppIdentity.AppUserModelId(hwnd, pid);
+                string name;
+                if (!AppIdentity.IsPackagedApp(appId, out name))
+                {
+                    appId = "";
+                    name = executable.Length > 0 ? AppIdentity.ProgramName(executable) : "";
+                }
+                windows.Add(new DockApp(hwnd, executable, title.ToString(), appId, name));
             }
             catch (Exception ex)
             {
