@@ -125,7 +125,7 @@ public partial class MainWindow : Window
     private double _expandedWidth => _shellState.ExpandedWidth;
     private double _expandedHeight
     {
-        get => _shellState.ExpandedHeight;
+        get => _shellState.ExpandedHeight - ForkExpandedHeightTrim(); // FORK(faridfox): shorter open notch while the tabs are outside it
         set => _shellState.ExpandedHeight = value;
     }
     private double _cornerRadiusCollapsed

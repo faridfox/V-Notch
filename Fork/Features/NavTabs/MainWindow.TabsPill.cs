@@ -29,6 +29,7 @@ public partial class MainWindow
     private ForkSettingsService? _forkTabsSettings;
     private Canvas? _forkTabsHost;
     private Border? _forkTabsPill;
+    private StackPanel? _forkTabsRow;                 // the tab row and, after it, the settings gear
     private Border? _forkTabsBridge;
     private Panel? _forkTabsHome;
     private int _forkTabsHomeIndex;
@@ -66,6 +67,9 @@ public partial class MainWindow
         // Presses on the pill's padding must not reach the notch (upstream would close it).
         _forkTabsPill.MouseLeftButtonDown += (_, e) => e.Handled = true;
         _forkTabsPill.SizeChanged += (_, _) => ForkPlaceTabsPill();
+        _forkTabsGear = ForkCreateTabsGear();
+        _forkTabsRow = new StackPanel { Orientation = Orientation.Horizontal, Children = { _forkTabsGear } };
+        _forkTabsPill.Child = _forkTabsRow;
         BindingOperations.SetBinding(_forkTabsPill, VisibilityProperty, new Binding(nameof(Visibility)) { Source = NavIconsPanel });
         _forkTabsBridge = new Border { Background = ForkFrozenBrush(Color.FromArgb(0x01, 0x00, 0x00, 0x00)) };
         _forkTabsHost = new Canvas
@@ -98,16 +102,16 @@ public partial class MainWindow
 
     internal void ForkApplyTabsSettings()
     {
-        if (_forkTabsSettings == null || _forkTabsPill == null || _forkTabsHome == null || _forkTabsHost == null) return;
+        if (_forkTabsSettings == null || _forkTabsPill == null || _forkTabsRow == null || _forkTabsHome == null || _forkTabsHost == null) return;
         var position = _forkTabsSettings.TabsPosition;
         var size = _forkTabsSettings.TabsSize;
-        bool inPill = ReferenceEquals(NavIconsPanel.Parent, _forkTabsPill);
+        bool inPill = ReferenceEquals(NavIconsPanel.Parent, _forkTabsRow);
 
         if (position == ForkTabsPosition.Top)
         {
             if (inPill)
             {
-                _forkTabsPill.Child = null;
+                _forkTabsRow.Children.Remove(NavIconsPanel);
                 _forkTabsHome.Children.Insert(Math.Min(_forkTabsHomeIndex, _forkTabsHome.Children.Count), NavIconsPanel);
             }
             ForkOrientTabs(vertical: false);
@@ -120,10 +124,12 @@ public partial class MainWindow
             if (!inPill)
             {
                 _forkTabsHome.Children.Remove(NavIconsPanel);
-                _forkTabsPill.Child = NavIconsPanel;
+                _forkTabsRow.Children.Insert(0, NavIconsPanel);
             }
             bool vertical = position is ForkTabsPosition.Left or ForkTabsPosition.Right;
             ForkOrientTabs(vertical);
+            _forkTabsRow.Orientation = vertical ? Orientation.Vertical : Orientation.Horizontal;
+            ForkOrientTabsGear(vertical);
             // Upstream re-applies the row's own 14,3 margin on every page change and slides it to 5 px in island mode;
             // cancel both, so the pill's padding alone decides the spacing.
             double restY = _settings.EnableDynamicIslandMode ? 5 : 0;
@@ -137,6 +143,7 @@ public partial class MainWindow
 
         _forkTabsPosition = position;
         _forkTabsSize = size;
+        ForkApplyTabsLayout();
         ForkApplyClipboardHeader();
         ForkPlaceTabsPill();
         ForkUpdateTabsHover();

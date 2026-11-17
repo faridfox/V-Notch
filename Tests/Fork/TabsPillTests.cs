@@ -52,7 +52,7 @@ public sealed class TabsPillTests : IDisposable
         Assert.Same(home, window.NavIconsPanel.Parent);                      // Top: upstream's place
 
         settings.PreviewTabs(ForkTabsPosition.Bottom, ForkTabsSize.Default);
-        Assert.Same(window.ForkTabsPill, window.NavIconsPanel.Parent);
+        Assert.Same(window.ForkTabsPill, ((FrameworkElement)window.NavIconsPanel.Parent).Parent);   // the pill's row
         Assert.Same(window.NotchWrapper, ((FrameworkElement)window.ForkTabsPill!.Parent).Parent);   // clicks reach it
         Assert.Equal(1, Grid.GetColumn((UIElement)window.ForkTabsPill.Parent));                   // under the notch
         Assert.True(window.NavTabsStackPanel.LayoutTransform.Value.IsIdentity);                   // a row
