@@ -23,7 +23,7 @@ public sealed class CompactLyricsWindowTests
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
     [Fact]
-    public void CollapsedWidthFollowsTheShownLineOnlyWhileMusicShows() => SharedStaTestRunner.RunAsync(async ct =>
+    public void TheCollapsedNotchHasOneFixedWidthWhileMusicShows() => SharedStaTestRunner.RunAsync(async ct =>
     {
         await using var fixture = CreateFixture();
         var window = fixture.Window;
@@ -42,18 +42,11 @@ public sealed class CompactLyricsWindowTests
             return CollapsedWidth(window);
         }
 
-        double tiny = Show("A");
-        double medium = Show("A somewhat longer song title, then more words");
-        double longer = Show("A somewhat longer song title, then more words and even more words to sing");
-        double huge = Show(new string('W', 400));
+        double expected = Math.Max(baseWidth, MainWindow.ForkCompactWidth);
+        Assert.Equal(expected, Show("A"));                                   // short and long lines alike:
+        Assert.Equal(expected, Show(new string('W', 400)));                  // no jumping between lines
 
-        Assert.Equal(MainWindow.ForkCompactMinWidth, tiny);
-        Assert.InRange(medium, MainWindow.ForkCompactMinWidth + 1, MainWindow.ForkCompactMaxWidth - 1);
-        Assert.True(longer > medium + 50, $"a longer line must widen the pill ({medium} -> {longer})");
-        Assert.Equal(MainWindow.ForkCompactMaxWidth, huge);
-        Assert.Equal(window.ForkFittedCompactWidth(window.ForkCompactTextShown), huge);
-
-        // Leaving the music view restores upstream's width, whatever line was shown last.
+        // Leaving the music view restores upstream's width.
         Set(window, "_isMusicCompactMode", false);
         Assert.Equal(baseWidth, CollapsedWidth(window));
     });
@@ -83,7 +76,7 @@ public sealed class CompactLyricsWindowTests
 
         window.ForkRefreshCompactText();
         Assert.Equal("first line here", window.ForkCompactTextShown);
-        var block = (TextBlock)window.MusicCompactContent.Children.OfType<Grid>().Single(grid => Grid.GetColumn(grid) == 1).Children[0];
+        var block = window.ForkCompactTextBlock!;
         Assert.Equal(3, block.Inlines.OfType<System.Windows.Documents.Run>().Count(run => run.Foreground is System.Windows.Media.LinearGradientBrush));
 
         media.Position = TimeSpan.FromSeconds(10);
@@ -99,8 +92,9 @@ public sealed class CompactLyricsWindowTests
         using var folder = new TempFolder();
         window.ForkAttachCompactText(new ForkSettingsService(folder.Path));
 
-        var host = window.MusicCompactContent.Children.OfType<Grid>()
-            .Single(grid => grid.Children.OfType<TextBlock>().Any() && Grid.GetColumn(grid) == 1);
+        var host = window.ForkCompactHost!;
+        Assert.Same(window.MusicCompactContent, host.Parent);
+        Assert.Equal(1, Grid.GetColumn(host));
         Assert.Equal(0, Grid.GetRow(host));
         Assert.False(host.IsHitTestVisible);
         Assert.Equal(0, Grid.GetColumn(window.CompactThumbnailBorder));

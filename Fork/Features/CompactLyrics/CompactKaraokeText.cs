@@ -54,13 +54,15 @@ internal sealed class CompactKaraokeText
     private readonly SolidColorBrush _sungBrush;
     private readonly SolidColorBrush _pendingBrush;
     private Word[] _words = [];
+    private readonly CompactLineScroller? _scroller;
     private bool _scheduled, _playing, _reduceMotion;
     private TimeSpan _scheduledPosition;
     private long _scheduledTick;
 
-    internal CompactKaraokeText(TextBlock block, Color sung)
+    internal CompactKaraokeText(TextBlock block, Color sung, CompactLineScroller? scroller = null)
     {
         _block = block;
+        _scroller = scroller;
         _sung = sung;
         _pending = Color.FromArgb(PendingAlpha, sung.R, sung.G, sung.B);
         _sungBrush = Frozen(_sung);
@@ -72,8 +74,10 @@ internal sealed class CompactKaraokeText
     /// <summary>Plain text at full brightness (title and artist, the instrumental mark).</summary>
     internal void SetText(string text)
     {
-        Reset(CompactKaraokeTiming.IsRightToLeft(text));
+        bool rtl = CompactKaraokeTiming.IsRightToLeft(text);
+        Reset(rtl);
         _block.Inlines.Add(new Run(text) { Foreground = _sungBrush });
+        _scroller?.SetContent([], rtl, plain: true);
     }
 
     /// <summary>A lyric line with every word dim; call <see cref="Update"/> to start the fade.</summary>
@@ -107,6 +111,7 @@ internal sealed class CompactKaraokeText
         }
         if (offset < line.Text.Length) _block.Inlines.Add(new Run(line.Text[offset..]) { Foreground = _pendingBrush });
         _words = words;
+        _scroller?.SetContent(Array.ConvertAll(words, w => w.Run), line.RightToLeft, plain: false);
     }
 
     /// <summary>Bring the fade to <paramref name="position"/>; cheap when nothing changed since the last schedule.</summary>
@@ -140,12 +145,21 @@ internal sealed class CompactKaraokeText
             Animate(word.Head, 1, remaining, delay, fps);
             Animate(word.Tail, 1 + SoftEdge, remaining, delay, fps);
         }
+        _scroller?.Follow(Array.ConvertAll(_words, w => w.Span), position, playing, reduceMotion);
+    }
+
+    /// <summary>The viewport changed size: measure again, and re-plan the scroll at the next update.</summary>
+    internal void Relayout()
+    {
+        _scroller?.Refresh();
+        _scheduled = false;
     }
 
     /// <summary>Freeze the fade where it is (the line is leaving or the notch is hidden).</summary>
     internal void Hold()
     {
         foreach (var word in _words) word.Hold();
+        _scroller?.Hold();
         _scheduled = false;
     }
 

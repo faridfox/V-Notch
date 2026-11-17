@@ -19,22 +19,16 @@ namespace VNotch;
 
 // faridfox fork: "lyrics in the collapsed notch" (Fork/README.md ledger). While music shows in the collapsed notch,
 // one line of text sits between the album art and the visualizer: the current lyric line with a per-word fade
-// (Spotify, switch on) or "Title — Artist" (switch off, other players, no lyrics found). The pill resizes to fit
-// each line.
+// (Spotify, switch on) or "Title — Artist" (switch off, other players, no lyrics found). The pill has one fixed
+// width; a line too long for it scrolls so the word being sung stays in view (CompactLineScroller).
 //
 // This is a fork-owned part of upstream's partial MainWindow, so every upstream member used below is checked by the
 // compiler at each sync. Upstream calls in through one marked line in GetCollapsedWidth
 // (Windows/MainWindow.AnimationHelpers.cs); Fork/Core/ForkUi.cs attaches it when the window loads.
 public partial class MainWindow
 {
-    /// <summary>The pill never gets narrower than this while it shows music (very short lines, the ♪ mark).</summary>
-    internal const double ForkCompactMinWidth = 150;
-    /// <summary>The pill never gets wider than this (or the configured width, if larger); longer lines end in "…".</summary>
-    internal const double ForkCompactMaxWidth = 600;
-    /// <summary>Breathing room around the text, so a fitted line is never cut by rounding.</summary>
-    private const double ForkCompactTextSlack = 6;
-    /// <summary>Width changes smaller than this are ignored (no tiny wobbles between similar lines).</summary>
-    private const double ForkCompactResizeThreshold = 3;
+    /// <summary>Width of the collapsed notch while it shows music (or the configured width, if that is larger).</summary>
+    internal const double ForkCompactWidth = 340;
 
     private static readonly TimeSpan ForkCompactTickPlaying = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan ForkCompactTickPaused = TimeSpan.FromMilliseconds(500);
@@ -46,14 +40,12 @@ public partial class MainWindow
     private TextBlock? _forkCompactText;
     private TranslateTransform? _forkCompactTextShift;
     private CompactKaraokeText? _forkKaraoke;
+    private CompactLineScroller? _forkCompactScroller;
     private UiScheduledTimer? _forkCompactTimer;
     private string _forkCompactShown = "";
     private string _forkCompactShownKey = "";
     private KaraokeLine? _forkCompactShownLine;
     private int _forkCompactTransition;
-    private double _forkCompactExtra;
-    // Everything in the pill that is not the text column (margins, art, visualizer); re-measured from live layout.
-    private double _forkCompactChrome = 72;
     private (string Track, string Artist, int Duration, string Priority)? _forkLyricsKey;
     private List<LyricLine>? _forkLyricsLines;
     private int _forkLyricsGeneration;
@@ -63,6 +55,9 @@ public partial class MainWindow
 
     internal bool ForkCompactTextAttached => _forkCompactHost != null;
     internal string ForkCompactTextShown => _forkCompactShown;
+    internal CompactLineScroller? ForkCompactScroller => _forkCompactScroller;
+    internal Grid? ForkCompactHost => _forkCompactHost;
+    internal TextBlock? ForkCompactTextBlock => _forkCompactText;
 
     internal const double ForkCompactFontSize = 13;
     /// <summary>How far the clipping host reaches above and below the album-art row (it is 22 px tall in a 34 px pill).</summary>
@@ -75,13 +70,14 @@ public partial class MainWindow
     /// </summary>
     internal static TextBlock ForkCreateCompactTextBlock(Style? titleStyle)
     {
+        // Never trimmed ("..."): a long line scrolls instead (CompactLineScroller).
         var text = new TextBlock
         {
-            TextTrimming = TextTrimming.CharacterEllipsis,
+            TextTrimming = TextTrimming.None,
             TextWrapping = TextWrapping.NoWrap,
-            TextAlignment = TextAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Center,
+            TextAlignment = TextAlignment.Left,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
         };
         if (titleStyle != null && titleStyle.TargetType.IsAssignableFrom(typeof(TextBlock))) text.Style = titleStyle;
         text.FontSize = ForkCompactFontSize;
@@ -98,8 +94,19 @@ public partial class MainWindow
     /// <see cref="ForkCompactHostOverhang"/> px beyond it, so Arabic descenders and marks are never cut, while its desired
     /// height stays below the row's 22 px (the pill's layout is unchanged).
     /// </summary>
-    internal static Grid ForkCreateCompactTextHost(TextBlock text)
+    internal static Grid ForkCreateCompactTextHost(TextBlock text) => ForkCreateCompactTextHost(text, out _, out _);
+
+    /// <summary>
+    /// The host, plus what scrolls the line: a Canvas (it measures the line at its full width, so nothing is cut with
+    /// "...") holding a left-to-right wrapper that carries the horizontal scroll, around the TextBlock (which may be
+    /// right-to-left). The wrapper is centred vertically in the host.
+    /// </summary>
+    internal static Grid ForkCreateCompactTextHost(TextBlock text, out FrameworkElement wrapper, out TranslateTransform scroll)
     {
+        scroll = new TranslateTransform();
+        var line = new Border { Child = text, FlowDirection = FlowDirection.LeftToRight, RenderTransform = scroll };
+        var canvas = new Canvas();
+        canvas.Children.Add(line);
         var host = new Grid
         {
             IsHitTestVisible = false,
@@ -107,14 +114,23 @@ public partial class MainWindow
             Margin = new Thickness(8, -ForkCompactHostOverhang, 6, -ForkCompactHostOverhang),
             VerticalAlignment = VerticalAlignment.Stretch,
         };
-        host.Children.Add(text);
+        host.Children.Add(canvas);
+        void Centre() => Canvas.SetTop(line, Math.Round((host.ActualHeight - line.ActualHeight) / 2, 1));
+        host.SizeChanged += (_, _) => Centre();
+        line.SizeChanged += (_, _) => Centre();
         Grid.SetRow(host, 0);
         Grid.SetColumn(host, 1);
+        wrapper = line;
         return host;
     }
 
-    /// <summary>Called from upstream's GetCollapsedWidth: every "back to rest" animation then fits the current line.</summary>
-    internal double ForkCompactExtraWidth() => _forkCompactHost != null && _isMusicCompactMode ? _forkCompactExtra : 0;
+    /// <summary>Called from upstream's GetCollapsedWidth: while music shows, the collapsed notch is the fixed fork width.</summary>
+    internal double ForkCompactExtraWidth()
+    {
+        if (_forkCompactHost == null || !_isMusicCompactMode) return 0;
+        double upstreamWidth = _settings.EnableDynamicIslandMode ? _settings.DynamicIslandWidth : _settings.Width;
+        return Math.Max(0, ForkCompactWidth - upstreamWidth);
+    }
 
     internal void ForkAttachCompactText(ForkSettingsService settings)
     {
@@ -125,17 +141,21 @@ public partial class MainWindow
         var titleStyle = TryFindResource("TitleText") as Style;
         var text = ForkCreateCompactTextBlock(titleStyle);
         text.RenderTransform = _forkCompactTextShift;
-        var host = ForkCreateCompactTextHost(text);
+        var host = ForkCreateCompactTextHost(text, out var wrapper, out var scroll);
         // Follow the album art. Every upstream surface that takes over the collapsed pill (volume, clipboard,
         // notifications, countdown) hides the art, so the text leaves with it instead of overlapping that surface.
         BindingOperations.SetBinding(host, OpacityProperty, new Binding(nameof(Opacity)) { Source = CompactThumbnailBorder });
         BindingOperations.SetBinding(host, VisibilityProperty, new Binding(nameof(Visibility)) { Source = CompactThumbnailBorder });
-        host.SizeChanged += (_, _) => ForkMeasureCompactChrome();
         MusicCompactContent.Children.Add(host);
 
         _forkCompactText = text;
         _forkCompactHost = host;
-        _forkKaraoke = new CompactKaraokeText(text, ForkCompactTextColor);
+        _forkCompactScroller = new CompactLineScroller(host, wrapper, text, scroll);
+        _forkKaraoke = new CompactKaraokeText(text, ForkCompactTextColor, _forkCompactScroller);
+        host.SizeChanged += (_, e) =>
+        {
+            if (e.WidthChanged) _forkKaraoke.Relayout();
+        };
 
         _forkCompactTimer = new UiScheduledTimer(DispatcherPriority.Background) { Interval = ForkCompactTickPlaying };
         _forkCompactTimer.Tick += (_, _) => ForkRefreshCompactText();
@@ -148,6 +168,10 @@ public partial class MainWindow
             _forkKaraoke?.Hold();
         };
 
+        // Music may already be showing: take the fork's width now.
+        _collapsedWidth = GetCollapsedWidth();
+        if (_isMusicCompactMode && !_isExpanded && !_isAnimating)
+            AnimateCompactWidth(_collapsedWidth, ForkCompactResizeDuration, _easeExpOut6, 0);
         ForkUpdateCompactTimer();
     }
 
@@ -266,8 +290,6 @@ public partial class MainWindow
         _forkCompactShownLine = content.Line;
         _forkCompactShown = content.Text;
         int version = ++_forkCompactTransition;
-        // Start resizing now, while the old line fades out, so the new one has its room when it appears.
-        ForkResizeCompactFor(content.Text);
 
         void Apply()
         {
@@ -305,56 +327,5 @@ public partial class MainWindow
             block.BeginAnimation(OpacityProperty, MakeAnim(0, 1, _dur200, _easeQuadOut, fps));
         };
         block.BeginAnimation(OpacityProperty, fadeOut);
-    }
-
-    // ---- width ------------------------------------------------------------------------------------------------
-
-    /// <summary>The collapsed width without the fork's extra (upstream's own value).</summary>
-    private double ForkBaseCollapsedWidth() => GetCollapsedWidth() - ForkCompactExtraWidth();
-
-    /// <summary>Notch width that fits <paramref name="text"/> on one line, within the min/max limits.</summary>
-    internal double ForkFittedCompactWidth(string text)
-    {
-        double baseWidth = ForkBaseCollapsedWidth();
-        if (text.Length == 0 || _forkCompactText == null) return baseWidth;
-        double desired = Math.Ceiling(ForkMeasureCompactText(text) + _forkCompactChrome + ForkCompactTextSlack);
-        return Math.Clamp(desired, Math.Min(ForkCompactMinWidth, baseWidth), Math.Max(ForkCompactMaxWidth, baseWidth));
-    }
-
-    private void ForkResizeCompactFor(string text)
-    {
-        double extra = ForkFittedCompactWidth(text) - ForkBaseCollapsedWidth();
-        if (Math.Abs(extra - _forkCompactExtra) < ForkCompactResizeThreshold) return;
-        _forkCompactExtra = extra;
-        if (!_isMusicCompactMode) return;
-
-        _collapsedWidth = GetCollapsedWidth();
-        if (_privacyIndicatorsVisible) UpdatePrivacyDotPosition(animate: true); // as upstream does on width changes
-        // Only when music owns the resting pill. Otherwise (hover, expanded, volume/clipboard/notification surfaces,
-        // greeting) upstream returns to _collapsedWidth by itself when it is done, which now fits this line.
-        if (!_isExpanded && !_isAnimating && !_isCompactThumbnailHovered && !_isAppNotificationBannerVisible &&
-            !_isGreetingActive && _compactPillArbiter.ActiveSlot == CompactPillSlot.None &&
-            MusicCompactContent.IsVisible && _forkCompactHost?.IsVisible == true)
-        {
-            AnimateCompactWidth(_collapsedWidth, ForkCompactResizeDuration, _easeExpOut6, 0);
-        }
-    }
-
-    private double ForkMeasureCompactText(string text)
-    {
-        var block = _forkCompactText!;
-        var formatted = new FormattedText(text, CultureInfo.CurrentUICulture,
-            CompactKaraokeTiming.IsRightToLeft(text) ? FlowDirection.RightToLeft : FlowDirection.LeftToRight,
-            new Typeface(block.FontFamily, block.FontStyle, block.FontWeight, block.FontStretch),
-            block.FontSize, Brushes.White, VisualTreeHelper.GetDpi(block).PixelsPerDip);
-        return formatted.WidthIncludingTrailingWhitespace;
-    }
-
-    // Self-calibrating: whatever upstream's layout puts around the text column is measured, not assumed.
-    private void ForkMeasureCompactChrome()
-    {
-        if (_forkCompactHost is not { ActualWidth: > 0 } host || !MusicCompactContent.IsVisible) return;
-        double chrome = NotchBorder.ActualWidth - host.ActualWidth;
-        if (chrome is > 30 and < 200) _forkCompactChrome = chrome;
     }
 }
