@@ -215,6 +215,14 @@ unlike reflection. Prefix all its members with `Fork`/`_fork` so they can't coll
 into it only through marked hook lines (example: `GetCollapsedWidth` → `ForkCompactExtraWidth()`). Tests can build
 windows with upstream's own fixtures (`GreetingAcceptanceTests.MainWindowFixture`) and call the attach method directly.
 
+**Interactive fork UI lives under `NotchWrapper`.** While the notch is visible, the window answers `WM_NCHITTEST`
+with "transparent" for every point whose element is not under `NotchWrapper` (or a few named upstream surfaces):
+`OverlayWindowController.HandleNcHitTest` → `MainWindow.IsPointInteractive`. So clickable fork UI is a child of
+`NotchWrapper`; to draw beside the notch without changing its layout, give it a fixed width and an equal negative
+margin (example: `Fork/Features/AppDock`). Layered-window rule on top: a pixel with alpha 0 never gets the mouse, so
+invisible hit areas use alpha 1 (`#01000000`). The line bar is the exception: it is only shown while the notch is
+hidden, when the check is skipped.
+
 **Service internals via a fork partial.** Upstream services are `partial` too (e.g. `MediaDetectionService`): a fork
 file in `namespace VNotch.Services` can add an internal interface implementation that reads private state (example:
 `Fork/Features/MediaSwitcher/MediaDetectionService.Sessions.cs`). Keep it read-only; let window code reach it through
