@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Media;
 using Microsoft.Extensions.DependencyInjection;
@@ -55,7 +56,7 @@ public sealed class NowPlayingTests
         Assert.Equal(Visibility.Collapsed, line.Visibility);
         // The time labels moved beside the bar: that height is what the album line uses.
         double withoutAlbum = Height(view);
-        Assert.True(withoutAlbum < before - 10, $"times beside the bar should free height ({before} -> {withoutAlbum})");
+        Assert.True(withoutAlbum <= before - 8, $"times beside the bar should free height ({before} -> {withoutAlbum})");
 
         window.ForkUpdateAlbumLine(Media("Geit Ala Karamty", "Esht Maak Hekayat"));
         Assert.Equal(Visibility.Visible, line.Visibility);
@@ -86,11 +87,30 @@ public sealed class NowPlayingTests
         Assert.Equal(0, Grid.GetColumn(view.CurrentTimeText));
         Assert.Equal(1, Grid.GetColumn(view.ProgressBarContainer));
         Assert.Equal(2, Grid.GetColumn(view.RemainingTimeText));
-        view.UpdateProgressSectionLayout();               // upstream resets the margins on every resize ...
-        Assert.NotEqual(0, view.CurrentTimeText.Margin.Top);
-        fixture.Window.ForkPlaceTimeLabels();             // ... and the fork's resize handler, running after, puts them back
-        Assert.Equal(0, view.CurrentTimeText.Margin.Top);
+        view.UpdateProgressSectionLayout();               // upstream's margins stay: nothing fights them
+
+        // No layout loop (it shook the whole view): once laid out, nothing keeps resizing.
+        view.ProgressBarBg.Visibility = Visibility.Visible;
+        Layout(view);
+        int resizes = 0;
+        view.MediaInfoSection.SizeChanged += (_, _) => resizes++;
+        Layout(view);
+        Layout(view);
+        Assert.Equal(0, resizes);
+
+        // The bar sits on the time labels' text line.
+        double Centre(FrameworkElement e) => e.TranslatePoint(new Point(0, e.ActualHeight / 2), view).Y;
+        double textCentre = Centre(view.CurrentTimeText);
+        Assert.InRange(Centre(view.ProgressBarBg) - textCentre, -1, 1);
     });
+
+    private static void Layout(FrameworkElement view)
+    {
+        Invalidate(view);
+        view.Measure(new Size(400, double.PositiveInfinity));
+        view.Arrange(new Rect(view.DesiredSize));
+        view.UpdateLayout();
+    }
 
     [Fact]
     public void TheAlbumNameUsesTheSongColourBrush() => SharedStaTestRunner.RunAsync(async ct =>
@@ -112,7 +132,8 @@ public sealed class NowPlayingTests
         var view = window.MediaPlayback;
         window.ForkAttachNowPlaying();
         var knob = window.ForkProgressKnob!;
-        Assert.Same(view.ProgressBarContainer, knob.Parent);
+        Assert.Same(view.ProgressSection, knob.Parent);            // beside the bar's 10 px area, not clipped by it
+        Assert.Equal(1, Grid.GetColumn(knob));
         Assert.False(knob.IsHitTestVisible);               // seeking on the bar keeps working
         Assert.Equal(0, knob.Opacity);                     // only shown while the bar is hovered
 
@@ -136,6 +157,9 @@ public sealed class NowPlayingTests
         Assert.Equal(Visibility.Visible, knob.Visibility);
         var shift = ((TransformGroup)knob.RenderTransform).Children.OfType<TranslateTransform>().Single();
         Assert.Equal(0.25 * width - knob.ActualWidth / 2, shift.X, 1);
+        Assert.Equal(MainWindow.ForkKnobSize, knob.ActualWidth, 2);             // a round dot ...
+        Assert.Equal(MainWindow.ForkKnobSize, knob.ActualHeight, 2);
+        Assert.Null(LayoutInformation.GetLayoutClip(knob));                      // ... that nothing cuts
     });
 
     [Fact]

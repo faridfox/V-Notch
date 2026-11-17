@@ -33,7 +33,8 @@ public partial class MainWindow
     internal const double ForkKnobSize = 12;
     /// <summary>Bar thickness while hovered (upstream: 10 px; Spotify keeps it slim).</summary>
     internal const double ForkHoverBarHeight = 6;
-    private const double ForkTimeGap = 7;
+    /// <summary>Lines the bar and the knob up with the time labels' text (see ForkAttachNowPlaying).</summary>
+    internal static readonly Thickness ForkBarRowOffset = new(0, 4, 0, 0);
 
     private TextBlock? _forkAlbumLine;
     private Run? _forkAlbumName;
@@ -73,14 +74,16 @@ public partial class MainWindow
         _forkAlbumName = name;
 
         // ---- time labels beside the bar ----
-        // Same row as the bar. Grid placement is never touched by upstream code; the labels' margins are, on every
-        // resize (UpdateProgressSectionLayout), so they are set again right after upstream's handler.
+        // Same row as the bar (Grid placement is never touched by upstream code). The labels keep the margins upstream
+        // gives them on every resize: re-setting them on resize made upstream and the fork reset each other in a loop,
+        // which shook the whole view. Upstream's 4 px top margin moves the labels' text 2 px below the row's centre,
+        // so the bar and the knob (never touched by upstream) move 2 px down as well, with a 4 px top margin of their own.
         Grid.SetRow(view.CurrentTimeText, 0);
         Grid.SetRow(view.RemainingTimeText, 0);
         Grid.SetColumn(view.ProgressBarContainer, 1);
         Grid.SetColumnSpan(view.ProgressBarContainer, 1);
-        view.MediaInfoSection.SizeChanged += (_, _) => ForkPlaceTimeLabels();
-        ForkPlaceTimeLabels();
+        view.ProgressBarBg.Margin = ForkBarRowOffset;
+        view.IndeterminateProgress.Margin = ForkBarRowOffset;
 
         // ---- progress knob (on hover) ----
         var knob = new Ellipse
@@ -105,7 +108,11 @@ public partial class MainWindow
         transforms.Children.Add(pop);
         transforms.Children.Add(shift);
         knob.RenderTransform = transforms;
-        view.ProgressBarContainer.Children.Add(knob);
+        // In the bar's grid cell, not inside the bar's own 10 px area: that would clip a 12 px dot into a flat pill.
+        knob.Margin = ForkBarRowOffset;
+        Grid.SetRow(knob, 0);
+        Grid.SetColumn(knob, 1);
+        view.ProgressSection.Children.Add(knob);
         _forkProgressKnob = knob;
         _forkKnobPop = pop;
         // These run after upstream's own handlers on the same element, so they replace upstream's hover look in the
@@ -149,15 +156,6 @@ public partial class MainWindow
         _forkAlbumShown = album;
         _forkAlbumName.Text = album;
         _forkAlbumLine.Visibility = album.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    internal void ForkPlaceTimeLabels()
-    {
-        var view = MediaPlayback;
-        view.CurrentTimeText.Margin = new Thickness(0, 0, ForkTimeGap, 0);
-        view.RemainingTimeText.Margin = new Thickness(ForkTimeGap, 0, 0, 0);
-        view.CurrentTimeText.VerticalAlignment = VerticalAlignment.Center;
-        view.RemainingTimeText.VerticalAlignment = VerticalAlignment.Center;
     }
 
     /// <summary>Spotify-style hover: slim bar, knob fades in; upstream's stretch, label zoom, blur and dim undone.</summary>
