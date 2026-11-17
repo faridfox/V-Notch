@@ -39,7 +39,7 @@ public sealed class NowPlayingTests
         Assert.Equal(left, NowPlayingText.KnobLeft(progress, width, knob), 3);
 
     [Fact]
-    public void TheAlbumLineSitsBetweenTitleAndArtistAndFitsTheCard() => SharedStaTestRunner.RunAsync(async ct =>
+    public void TitleAlbumAndArtistAreSpacedAndTheCardStillFits() => SharedStaTestRunner.RunAsync(async ct =>
     {
         await using var fixture = CreateFixture();
         var window = fixture.Window;
@@ -53,17 +53,43 @@ public sealed class NowPlayingTests
         Assert.Equal(panel.Children.IndexOf(view.TitleScrollContainer) + 1, panel.Children.IndexOf(line));
         Assert.Equal(panel.Children.IndexOf(view.ArtistScrollContainer) - 1, panel.Children.IndexOf(line));
         Assert.Equal(Visibility.Collapsed, line.Visibility);
-        Assert.Equal(before, Height(view), 1);         // hidden: upstream's layout unchanged
+        // The time labels moved beside the bar: that height is what the album line uses.
+        double withoutAlbum = Height(view);
+        Assert.True(withoutAlbum < before - 10, $"times beside the bar should free height ({before} -> {withoutAlbum})");
 
         window.ForkUpdateAlbumLine(Media("Geit Ala Karamty", "Esht Maak Hekayat"));
         Assert.Equal(Visibility.Visible, line.Visibility);
         Assert.Equal("Album: Esht Maak Hekayat", string.Concat(line.Inlines.OfType<Run>().Select(r => r.Text)));
         double after = Height(view);
-        Assert.InRange(after - before, 1, 9);          // tucked into the title row's empty bottom
+        Assert.True(after - withoutAlbum >= 13, $"the album line has its own row ({withoutAlbum} -> {after})");
         Assert.True(after <= 117, $"the music view must fit the 147 px notch's card (117 px), got {after}");
+
+        // Lines do not overlap: title, album, artist from top to bottom with room between them.
+        view.Arrange(new Rect(view.DesiredSize));
+        view.UpdateLayout();
+        double Top(FrameworkElement e) => e.TranslatePoint(new Point(0, 0), view).Y;
+        Assert.True(Top(line) >= Top(view.TitleScrollContainer) + view.TitleScrollContainer.ActualHeight - 0.5);
+        Assert.True(Top(view.ArtistScrollContainer) >= Top(line) + line.ActualHeight);
 
         window.ForkUpdateAlbumLine(Media("Ripe", ""));
         Assert.Equal(Visibility.Collapsed, line.Visibility);
+    });
+
+    [Fact]
+    public void TheTimesSitOnTheBarsRow() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture();
+        var view = fixture.Window.MediaPlayback;
+        fixture.Window.ForkAttachNowPlaying();
+        Assert.Equal(0, Grid.GetRow(view.CurrentTimeText));
+        Assert.Equal(0, Grid.GetRow(view.RemainingTimeText));
+        Assert.Equal(0, Grid.GetColumn(view.CurrentTimeText));
+        Assert.Equal(1, Grid.GetColumn(view.ProgressBarContainer));
+        Assert.Equal(2, Grid.GetColumn(view.RemainingTimeText));
+        view.UpdateProgressSectionLayout();               // upstream resets the margins on every resize ...
+        Assert.NotEqual(0, view.CurrentTimeText.Margin.Top);
+        fixture.Window.ForkPlaceTimeLabels();             // ... and the fork's resize handler, running after, puts them back
+        Assert.Equal(0, view.CurrentTimeText.Margin.Top);
     });
 
     [Fact]
@@ -88,6 +114,7 @@ public sealed class NowPlayingTests
         var knob = window.ForkProgressKnob!;
         Assert.Same(view.ProgressBarContainer, knob.Parent);
         Assert.False(knob.IsHitTestVisible);               // seeking on the bar keeps working
+        Assert.Equal(0, knob.Opacity);                     // only shown while the bar is hovered
 
         view.ProgressBarBg.Visibility = Visibility.Visible;
         view.IndeterminateProgress.Visibility = Visibility.Collapsed;
@@ -107,7 +134,27 @@ public sealed class NowPlayingTests
         Assert.Equal(Visibility.Collapsed, knob.Visibility);
         view.IndeterminateProgress.Visibility = Visibility.Collapsed;
         Assert.Equal(Visibility.Visible, knob.Visibility);
-        Assert.Equal(0.25 * width - knob.ActualWidth / 2, ((TranslateTransform)knob.RenderTransform).X, 1);
+        var shift = ((TransformGroup)knob.RenderTransform).Children.OfType<TranslateTransform>().Single();
+        Assert.Equal(0.25 * width - knob.ActualWidth / 2, shift.X, 1);
+    });
+
+    [Fact]
+    public void HoveringKeepsTheBarSlimAndShowsTheKnob() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture();
+        var window = fixture.Window;
+        var view = window.MediaPlayback;
+        window.ForkAttachNowPlaying();
+        window.ShowActivated = false;
+        window.Show();                                     // animations only run in a shown window
+        view.AnimateProgressBarHover(true);                // upstream: thick bar, zoomed times, blurred controls
+        window.ForkProgressHover(true);                    // the fork's handler runs right after it
+        await WpfFrameWaiter.UntilAsync(() => Math.Abs(view.ProgressBarBg.Height - MainWindow.ForkHoverBarHeight) < 0.05 &&
+            window.ForkProgressKnob!.Opacity > 0.99, "hover look settles", ct);
+        Assert.Equal(MainWindow.ForkHoverBarHeight, view.ProgressBarBg.Height, 1);
+        Assert.Equal(1, view.ProgressBarMainScale.ScaleX, 2);
+        Assert.Equal(1, view.MediaControls.Opacity, 2);
+        Assert.Equal(1, window.ForkProgressKnob!.Opacity, 2);
     });
 
     // The window is never shown, so WPF does not pass "measure again" up the tree: invalidate it all, then measure.
