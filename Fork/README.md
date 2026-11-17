@@ -30,6 +30,7 @@ upstream change, needs work), `upstream-candidate`, `offered upstream (<link>)`,
 | `feat(line-bar): press and hold the notch into a thin progress bar` | Press and hold the collapsed notch (450 ms): it hides (upstream's tray "Hide notch") and a thin, fully rounded bar takes its place at the top edge, showing the track's progress, or a plain line when nothing is loaded. One click on the bar (or tray "Show notch") brings the notch back, collapsed. A short click still opens the notch, on release | `Windows/MainWindow.xaml.cs` (`ToggleNotchFromClick`) | active |
 | `feat(now-playing): album line and progress knob` | Expanded music view: "Album: <name>" between title and artist (name in the song's colour; hidden for singles and when unknown), and a white knob on the end of the played part of the progress bar. Inserted at runtime into upstream's `MediaPlaybackView` | none | active |
 | `feat(media-switcher): switch the shown media source` | A pill on the album art shows the playing app's icon; with several apps or tabs holding media, ‹ › switch between them (upstream's pin), and clicking the icon returns to automatic choice. Sessions are listed by a fork part of `MediaDetectionService` | none | active |
+| `feat(app-dock): open apps beside the expanded notch` | While the notch is open on its Media page, a slim dock beside it shows the open apps (most recent first); a click brings one to the front, the wheel scrolls | none | active |
 
 ## Licence
 
