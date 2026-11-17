@@ -1848,7 +1848,7 @@ public partial class MainWindow : Window
 
     private void ToggleNotchFromClick(int clickCount)
     {
-        if (ForkHandleNotchClick(clickCount)) return; // FORK(faridfox): double-click turns the notch into a line bar
+        if (ForkHandleNotchClick(clickCount)) return; // FORK(faridfox): press-and-hold turns the notch into a line bar
         if (_isDebugViewLocked) return;
         if (IsCountdownCompletionVisualActive || IsAppNotificationBannerActive) return;
         if (_isExpanded)
